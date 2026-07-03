@@ -1,0 +1,44 @@
+{
+  "name": "@ilm/cms",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite --host 127.0.0.1",
+    "lint": "eslint .",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@ilm/ai": "workspace:*",
+    "@ilm/analytics": "workspace:*",
+    "@ilm/editor": "workspace:*",
+    "@ilm/github": "workspace:*",
+    "@ilm/media": "workspace:*",
+    "@ilm/publishing": "workspace:*",
+    "@ilm/repository": "workspace:*",
+    "@ilm/seo": "workspace:*",
+    "@ilm/ui": "workspace:*",
+    "@vitejs/plugin-react": "6.0.3",
+    "dexie": "4.4.4",
+    "lucide-react": "1.23.0",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "react-router-dom": "7.18.1",
+    "tailwindcss": "4.3.2",
+    "vite": "8.1.3"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "4.3.2",
+    "@testing-library/jest-dom": "6.9.1",
+    "@testing-library/react": "16.3.2",
+    "@testing-library/user-event": "14.6.1",
+    "@types/react": "19.2.17",
+    "@types/react-dom": "19.2.3",
+    "jsdom": "29.1.1",
+    "typescript": "6.0.3",
+    "vitest": "4.1.9"
+  }
+}

@@ -1,0 +1,25 @@
+---
+import { getPublishedPosts } from "../template/posts";
+
+const posts = await getPublishedPosts();
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width" />
+    <title>Ilm Starter</title>
+    <meta name="description" content="A user-owned Ilm blog starter." />
+  </head>
+  <body>
+    <main>
+      <h1>Ilm Starter</h1>
+      <p>Static output generated from the user-owned repository structure.</p>
+      <ul>
+        {posts.map((post) => <li><a href={`/posts/${post.slug}/`}>{post.title}</a></li>)}
+      </ul>
+    </main>
+  </body>
+</html>
+
