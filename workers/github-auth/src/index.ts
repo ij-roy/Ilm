@@ -236,7 +236,11 @@ async function handleGetAppMetadata(env: Env, corsOrigin: string): Promise<Respo
       );
     }
 
-    const appData = (await response.json()) as { client_id: string; name: string; html_url: string };
+    const appData = (await response.json()) as {
+      client_id: string;
+      name: string;
+      html_url: string;
+    };
     return json(
       {
         appId: env.GITHUB_APP_ID,

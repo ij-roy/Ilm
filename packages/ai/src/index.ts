@@ -114,8 +114,7 @@ export async function generateGeminiSuggestion(
       error?: { message?: string };
     }
     const errorData = (await response.json().catch(() => ({}))) as GeminiError;
-    const message =
-      errorData?.error?.message || `Gemini API returned status ${response.status}`;
+    const message = errorData?.error?.message || `Gemini API returned status ${response.status}`;
     throw new Error(message);
   }
 
