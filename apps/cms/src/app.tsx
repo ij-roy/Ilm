@@ -23,12 +23,7 @@ import {
   List,
   ListOrdered
 } from "lucide-react";
-import {
-  createSuggestion,
-  generateGeminiSuggestion,
-  AiSuggestion,
-  AiSuggestionKind
-} from "@ilm/ai";
+import { generateGeminiSuggestion, AiSuggestion, AiSuggestionKind } from "@ilm/ai";
 import { createGoogleOAuthUrl } from "@ilm/analytics";
 import {
   estimateReadingTimeMinutes,
@@ -146,7 +141,7 @@ async function deriveKey(passphrase: string, salt: Uint8Array): Promise<CryptoKe
   return window.crypto.subtle.deriveKey(
     {
       name: "PBKDF2",
-      salt: salt as any,
+      salt: salt as BufferSource,
       iterations: 100000,
       hash: "SHA-256"
     },
@@ -208,23 +203,6 @@ const initialDraft: DraftRecord = {
     "# Own your publishing workflow\n\nIlm writes portable Markdown into a user-owned GitHub repository.\n\n## Why it matters\n\nContent remains independent from the CMS implementation.",
   updatedAt: new Date().toISOString()
 };
-
-const requiredRepositoryEntries: RepositoryEntry[] = [
-  RepositoryLayout.posts,
-  RepositoryLayout.drafts,
-  RepositoryLayout.images,
-  RepositoryLayout.covers,
-  RepositoryLayout.attachments,
-  RepositoryLayout.config,
-  RepositoryLayout.siteConfig,
-  RepositoryLayout.seoConfig,
-  RepositoryLayout.navigationConfig,
-  RepositoryLayout.astroSite,
-  RepositoryLayout.workflows
-].map((path) => ({
-  path,
-  type: path.endsWith(".ts") ? "file" : "directory"
-}));
 
 function createInitialState(): CmsState {
   return {
@@ -300,9 +278,12 @@ function CmsApplication() {
       .then((meta) => {
         setAppMetadata(meta);
       })
-      .catch((err: any) => {
+      .catch((err: unknown) => {
         if (typeof process === "undefined" || process.env.NODE_ENV !== "test") {
-          console.warn("Could not load GitHub App metadata:", err.message || err);
+          console.warn(
+            "Could not load GitHub App metadata:",
+            (err as Error).message || String(err)
+          );
         }
       });
   }, []);
@@ -347,8 +328,8 @@ function CmsApplication() {
       .then((entries) => {
         setRepoEntries(entries);
       })
-      .catch((err: any) => {
-        setStatus(`Failed to read repository layout: ${err.message}`);
+      .catch((err: unknown) => {
+        setStatus(`Failed to read repository layout: ${(err as Error).message}`);
       });
   }, [state.repository, activeGithubClient]);
 
@@ -407,8 +388,8 @@ function CmsApplication() {
     try {
       const repositories = await activeGithubClient.listRepositories();
       setState((curr) => ({ ...curr, availableRepositories: repositories }));
-    } catch (err: any) {
-      setStatus(`Failed to load repositories: ${err.message}`);
+    } catch (err: unknown) {
+      setStatus(`Failed to load repositories: ${(err as Error).message}`);
     }
   }
 
@@ -503,8 +484,8 @@ function CmsApplication() {
           geminiEncryptedKey: encrypted
         }));
         setStatus("Gemini API key encrypted and saved locally.");
-      } catch (err: any) {
-        alert(`Encryption failed: ${err.message}`);
+      } catch (err: unknown) {
+        alert(`Encryption failed: ${(err as Error).message}`);
       }
     } else {
       setState((curr) => ({
@@ -554,9 +535,9 @@ function CmsApplication() {
       setState((current) => ({ ...current, aiSuggestion: suggestion }));
       setStatus("AI suggestion prepared.");
       addEvent("ai", `AI suggestion prepared: ${kind}`);
-    } catch (err: any) {
-      setStatus(`AI suggestion failed: ${err.message}`);
-      addEvent("ai", `AI suggestion failed: ${err.message}`);
+    } catch (err: unknown) {
+      setStatus(`AI suggestion failed: ${(err as Error).message}`);
+      addEvent("ai", `AI suggestion failed: ${(err as Error).message}`);
     }
   }
 
@@ -659,9 +640,9 @@ function CmsApplication() {
       result = await activeGithubClient.executeCommit(
         manifestToCommitRequest(state.repository, plan.value.commit)
       );
-    } catch (err: any) {
+    } catch (err: unknown) {
       setState((c) => ({ ...c, publishProgress: "failed" }));
-      setStatus(`Commit failed: ${err.message}`);
+      setStatus(`Commit failed: ${(err as Error).message}`);
       return;
     }
 
@@ -694,7 +675,7 @@ function CmsApplication() {
           setState((c) => ({ ...c, publishProgress: "deploying" }));
           setStatus("Deploying via GitHub Actions...");
         }
-      } catch (err) {
+      } catch {
         setState((c) => ({ ...c, publishProgress: "failed" }));
         setStatus("Failed to read workflow status.");
         break;
@@ -948,6 +929,7 @@ function Dashboard({
   );
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function EditorToolbar({ editor }: { readonly editor: any }) {
   if (!editor) return null;
 
@@ -1073,11 +1055,13 @@ function EditorPage({
     extensions: defaultEditorExtensions,
     content: draft.markdown,
     onUpdate: ({ editor }) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       onChange({ markdown: (editor.storage as any).markdown.getMarkdown() });
     }
   });
 
   React.useEffect(() => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     if (editor && draft.markdown !== (editor.storage as any).markdown.getMarkdown()) {
       editor.commands.setContent(draft.markdown);
     }
