@@ -2,7 +2,8 @@ import type { APIRoute } from "astro";
 import { getSearchableContent } from "../template/posts";
 
 export const GET: APIRoute = async () => {
-  const isDev = import.meta.env.DEV;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const isDev = (import.meta as any).env?.DEV ?? false;
   const posts = await getSearchableContent(isDev);
 
   // We strip down the index to just what we need to search

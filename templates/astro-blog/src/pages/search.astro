@@ -24,7 +24,7 @@ try {
 
     {googleAnalyticsId && (
       <>
-        <script type="text/javascript" async src={`https://www.googletagmanager.com/gtag/js?id=${googleAnalyticsId}`}></script>
+        <script type="text/javascript" is:inline async src={`https://www.googletagmanager.com/gtag/js?id=${googleAnalyticsId}`}></script>
         <script type="text/javascript" is:inline define:vars={{ googleAnalyticsId }}>
           window.dataLayer = window.dataLayer || [];
           function gtag(){dataLayer.push(arguments);}
@@ -58,10 +58,10 @@ try {
     </div>
 
     <script>
-      let searchIndex = [];
-      const input = document.getElementById("search-input");
-      const resultsContainer = document.getElementById("search-results");
-      const loading = document.getElementById("loading");
+      let searchIndex: any[] = [];
+      const input = document.getElementById("search-input") as HTMLInputElement;
+      const resultsContainer = document.getElementById("search-results") as HTMLUListElement;
+      const loading = document.getElementById("loading") as HTMLDivElement;
 
       async function initSearch() {
         try {
@@ -70,7 +70,7 @@ try {
           loading.style.display = "none";
           
           input.addEventListener("input", (e) => {
-            const query = e.target.value.toLowerCase().trim();
+            const query = (e.target as HTMLInputElement).value.toLowerCase().trim();
             if (!query) {
               resultsContainer.innerHTML = "";
               return;

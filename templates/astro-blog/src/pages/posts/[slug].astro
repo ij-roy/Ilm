@@ -63,7 +63,7 @@ const htmlBody = marked.parse(post.body);
 
     {googleAnalyticsId && (
       <>
-        <script type="text/javascript" async src={`https://www.googletagmanager.com/gtag/js?id=${googleAnalyticsId}`}></script>
+        <script type="text/javascript" is:inline async src={`https://www.googletagmanager.com/gtag/js?id=${googleAnalyticsId}`}></script>
         <script type="text/javascript" is:inline define:vars={{ googleAnalyticsId }}>
           window.dataLayer = window.dataLayer || [];
           function gtag(){dataLayer.push(arguments);}
@@ -73,7 +73,7 @@ const htmlBody = marked.parse(post.body);
       </>
     )}
 
-    <script type="application/ld+json" set:html={JSON.stringify(jsonLd)} />
+    <script type="application/ld+json" is:inline set:html={JSON.stringify(jsonLd)} />
     
     <style>
       body { font-family: sans-serif; line-height: 1.6; color: #0f172a; max-width: 800px; margin: 0 auto; padding: 2rem; }

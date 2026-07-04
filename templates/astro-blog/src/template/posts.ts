@@ -17,7 +17,7 @@ const draftRoot = fileURLToPath(new URL("../content/drafts", import.meta.url));
 export async function getPublishedPosts(): Promise<TemplatePost[]> {
   try {
     const files = (await readdir(contentRoot)).filter((file) => file.endsWith(".md"));
-    return Promise.all(files.map(readPost));
+    return Promise.all(files.map((f) => readPost(f)));
   } catch {
     return [];
   }
