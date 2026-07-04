@@ -83,55 +83,48 @@ describe("@ilm/github-auth worker", () => {
     vi.unstubAllGlobals();
   });
 
-  it("exchanges installation token", async () => {
-    const mockFetch = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({
-        token: "ghs_mocktokenvalue",
-        expires_at: "2026-07-04T23:59:59Z"
-      })
-    });
-    vi.stubGlobal("fetch", mockFetch);
-
-    const env: Env = {
-      GITHUB_APP_ID: "12345",
-      GITHUB_APP_PRIVATE_KEY: mockPrivateKeyPem,
-      ALLOWED_ORIGIN: "http://localhost:5173"
-    };
-
+  it("returns 404 for removed installation-token endpoint", async () => {
+    const env: Env = { GITHUB_APP_ID: "12345" };
     const response = await worker.fetch(
-      new Request("https://auth.ilm.dev/github/app/installation-token", {
-        method: "POST",
-        body: JSON.stringify({ installation_id: 12345 })
-      }),
+      new Request("https://auth.ilm.dev/github/app/installation-token", { method: "POST" }),
       env
     );
-
-    expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({
-      token: "ghs_mocktokenvalue",
-      expires_at: "2026-07-04T23:59:59Z"
-    });
-
-    expect(mockFetch).toHaveBeenCalledWith(
-      "https://api.github.com/app/installations/12345/access_tokens",
-      expect.any(Object)
-    );
-    vi.unstubAllGlobals();
+    expect(response.status).toBe(404);
   });
 
   it("redirects on callback route", async () => {
     const env: Env = {
       GITHUB_APP_ID: "12345",
+      GITHUB_APP_PRIVATE_KEY: mockPrivateKeyPem,
+      GITHUB_CLIENT_SECRET: "mock_secret",
       ALLOWED_ORIGIN: "http://localhost:5173"
     };
 
+    const mockFetch = vi.fn().mockImplementation((url: string) => {
+      if (url.includes("/app") && !url.includes("installations")) {
+        return Promise.resolve(new Response(JSON.stringify({ client_id: "cid", html_url: "url" })));
+      }
+      if (url.includes("oauth/access_token")) {
+        return Promise.resolve(new Response(JSON.stringify({ access_token: "user_token" })));
+      }
+      if (url.includes("user/installations")) {
+        return Promise.resolve(new Response(JSON.stringify({ installations: [{ id: 9876 }] })));
+      }
+      if (url.includes("access_tokens")) {
+        return Promise.resolve(new Response(JSON.stringify({ token: "inst_token" })));
+      }
+      return Promise.resolve(new Response("{}"));
+    });
+    vi.stubGlobal("fetch", mockFetch);
+
     const response = await worker.fetch(
-      new Request("https://auth.ilm.dev/github/app/callback?code=abc&installation_id=9876"),
+      new Request("https://auth.ilm.dev/github/app/callback?code=abc"),
       env
     );
 
     expect(response.status).toBe(302);
-    expect(response.headers.get("Location")).toBe("http://localhost:5173/dashboard?installation_id=9876&code=abc");
+    expect(response.headers.get("Location")).toBe("http://localhost:5173/dashboard?installation_id=9876&access_token=inst_token");
+    
+    vi.unstubAllGlobals();
   });
 });

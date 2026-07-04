@@ -24,6 +24,7 @@ describe("@ilm/publishing", () => {
       title: "Ship Ilm",
       markdown: "# Ship Ilm",
       draftSlug: "ship-ilm",
+      hasRemoteDraft: true,
       media: [
         {
           location: { kind: "cover", fileName: "cover.webp", path: "media/covers/cover.webp" },

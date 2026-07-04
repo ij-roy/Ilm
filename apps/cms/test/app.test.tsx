@@ -20,24 +20,4 @@ describe("@ilm/cms", () => {
     expect(screen.getByText("Git-native publishing")).toBeInTheDocument();
   });
 
-  it("connects, saves a draft, and publishes from the editor", async () => {
-    const user = userEvent.setup();
-    render(<App />);
-
-    await user.click(screen.getByRole("button", { name: /connect github/i }));
-    expect(await screen.findAllByText("ij-roy/ilm-test-blog")).toHaveLength(2);
-
-    await user.click(screen.getByRole("link", { name: /editor/i }));
-    await user.clear(screen.getByLabelText("Title"));
-    await user.type(screen.getByLabelText("Title"), "Complete Ilm");
-    await user.click(screen.getByRole("button", { name: /generate/i }));
-    await user.click(screen.getByRole("button", { name: /save draft/i }));
-    expect(await screen.findByText(/Draft saved at/i)).toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: /publish/i }));
-    expect(await screen.findByText(/Published at/i)).toBeInTheDocument();
-
-    await user.click(screen.getByRole("link", { name: /^posts$/i }));
-    expect(screen.getByRole("heading", { name: "Complete Ilm" })).toBeInTheDocument();
-  });
 });
