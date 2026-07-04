@@ -19,6 +19,7 @@
   },
   "dependencies": {
     "@ilm/publishing": "workspace:*",
+    "@ilm/repository": "workspace:*",
     "@ilm/shared": "workspace:*",
     "@octokit/rest": "22.0.1"
   },

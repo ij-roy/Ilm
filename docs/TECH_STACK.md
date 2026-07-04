@@ -302,7 +302,7 @@ Reason:
 
 Preferred:
 
-GitHub Authentication
+GitHub App authentication
 
 Purpose:
 
@@ -311,6 +311,18 @@ Purpose:
 - Reading content
 
 GitHub is the only supported provider in Version 1.
+
+Why GitHub App over OAuth App:
+
+- Installation-scoped access is a better long-term fit for a publishing tool.
+- Permissions can be limited to the exact repository and operations Ilm needs.
+- Users can revoke access per installation without revoking personal account access.
+- The same integration model fits repository listing, content reads, writes, and workflow visibility.
+- It avoids depending on a user-scoped OAuth token as the primary production credential.
+
+GitHub App authorization callback URL:
+
+- `https://github-auth.freefireplayer0-069.workers.dev/github/app/callback`
 
 ---
 

@@ -505,7 +505,7 @@ AI never changes content without explicit approval.
 
 Preferred flow:
 
-GitHub Authentication
+GitHub App authentication
 
 ↓
 
@@ -520,6 +520,12 @@ Token Storage
 API Access
 
 Only the minimum required permissions should be requested.
+
+Use a GitHub App for the production path so Ilm can request repository-scoped permissions, operate with installation tokens, and avoid tying long-term publishing access to a user OAuth token.
+
+GitHub App authorization callback URL:
+
+`https://github-auth.freefireplayer0-069.workers.dev/github/app/callback`
 
 ---
 

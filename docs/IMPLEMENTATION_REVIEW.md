@@ -65,7 +65,7 @@ The Ilm repository does not contain:
 
 ## Authentication Worker
 
-The GitHub OAuth exchange worker belongs under:
+The GitHub App authentication worker belongs under:
 
 ```text
 workers/
@@ -193,7 +193,7 @@ Risks:
 
 Required mitigations:
 
-- Use a stateless GitHub auth worker for OAuth exchange.
+- Use a stateless GitHub auth worker to prepare GitHub App installation-token requests.
 - Keep secrets session-only by default.
 - Encrypt optional persisted AI keys with Web Crypto.
 - Never log credentials.

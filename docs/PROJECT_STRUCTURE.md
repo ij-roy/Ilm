@@ -61,7 +61,7 @@ The React CMS application. It owns routing, application shell, editor surfaces, 
 
 `workers/github-auth`
 
-The stateless Cloudflare Worker used for GitHub OAuth exchange. It is infrastructure, not an application.
+The stateless Cloudflare Worker used for GitHub App installation-token preparation. It is infrastructure, not an application.
 
 `packages/ui`
 

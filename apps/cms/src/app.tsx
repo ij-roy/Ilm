@@ -14,10 +14,10 @@ import {
   Sparkles,
   UploadCloud
 } from "lucide-react";
-import { createSuggestion } from "@ilm/ai";
+import { createSuggestion, generateGeminiSuggestion } from "@ilm/ai";
 import { createGoogleOAuthUrl } from "@ilm/analytics";
 import { estimateReadingTimeMinutes, extractOutline, isLocalDraftNewer } from "@ilm/editor";
-import { LocalGitHubClient, manifestToCommitRequest } from "@ilm/github";
+import { GitHubClient, LocalGitHubClient, manifestToCommitRequest } from "@ilm/github";
 import { planMediaAsset } from "@ilm/media";
 import { createDraftSavePlan, createPublishPlan, validatePublishPlan } from "@ilm/publishing";
 import {
@@ -68,6 +68,13 @@ type PublishEvent = {
   readonly createdAt: string;
 };
 
+type AppMetadata = {
+  readonly appId: string;
+  readonly clientId: string;
+  readonly name: string;
+  readonly htmlUrl: string;
+};
+
 type CmsState = {
   readonly repository?: ConnectedRepository;
   readonly activeDraft: DraftRecord;
@@ -76,6 +83,11 @@ type CmsState = {
   readonly media: readonly MediaRecord[];
   readonly events: readonly PublishEvent[];
   readonly aiSuggestion?: string;
+  readonly accessToken?: string;
+  readonly installationId?: string;
+  readonly geminiApiKey?: string;
+  readonly geminiEncryptedKey?: string;
+  readonly googleAnalyticsId?: string;
 };
 
 const navItems = [
@@ -89,8 +101,71 @@ const navItems = [
   { label: "Settings", href: "/settings", icon: Settings }
 ];
 
+async function deriveKey(passphrase: string, salt: Uint8Array): Promise<CryptoKey> {
+  const encoder = new TextEncoder();
+  const baseKey = await window.crypto.subtle.importKey(
+    "raw",
+    encoder.encode(passphrase),
+    { name: "PBKDF2" },
+    false,
+    ["deriveKey"]
+  );
+  return window.crypto.subtle.deriveKey(
+    {
+      name: "PBKDF2",
+      salt,
+      iterations: 100000,
+      hash: "SHA-256"
+    },
+    baseKey,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["encrypt", "decrypt"]
+  );
+}
+
+async function encryptData(plaintext: string, passphrase: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const salt = window.crypto.getRandomValues(new Uint8Array(16));
+  const iv = window.crypto.getRandomValues(new Uint8Array(12));
+  const key = await deriveKey(passphrase, salt);
+  const encrypted = await window.crypto.subtle.encrypt(
+    { name: "AES-GCM", iv },
+    key,
+    encoder.encode(plaintext)
+  );
+
+  const combined = new Uint8Array(salt.length + iv.length + encrypted.byteLength);
+  combined.set(salt, 0);
+  combined.set(iv, salt.length);
+  combined.set(new Uint8Array(encrypted), salt.length + iv.length);
+
+  return btoa(String.fromCharCode(...combined));
+}
+
+async function decryptData(ciphertextBase64: string, passphrase: string): Promise<string> {
+  const binary = atob(ciphertextBase64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+
+  const salt = bytes.slice(0, 16);
+  const iv = bytes.slice(16, 28);
+  const encrypted = bytes.slice(28);
+
+  const key = await deriveKey(passphrase, salt);
+  const decrypted = await window.crypto.subtle.decrypt(
+    { name: "AES-GCM", iv },
+    key,
+    encrypted
+  );
+
+  return new TextDecoder().decode(decrypted);
+}
+
 const storageKey = "ilm.cms.state.v1";
-const githubClient = new LocalGitHubClient();
+const defaultLocalGithubClient = new LocalGitHubClient();
 
 const initialDraft: DraftRecord = {
   id: "draft-local",
@@ -128,7 +203,10 @@ function createInitialState(): CmsState {
     drafts: [],
     posts: [],
     media: [],
-    events: []
+    events: [],
+    geminiApiKey: "",
+    geminiEncryptedKey: "",
+    googleAnalyticsId: ""
   };
 }
 
@@ -170,6 +248,117 @@ function CmsApplication() {
     window.localStorage.setItem(storageKey, JSON.stringify(state));
   }, [state]);
 
+  const activeGithubClient = React.useMemo(() => {
+    return state.accessToken ? new GitHubClient(state.accessToken) : defaultLocalGithubClient;
+  }, [state.accessToken]);
+
+  const [appMetadata, setAppMetadata] = React.useState<AppMetadata | null>(null);
+
+  React.useEffect(() => {
+    const workerUrl = import.meta.env.VITE_GITHUB_AUTH_WORKER_URL;
+    if (!workerUrl) return;
+
+    fetch(`${workerUrl}/github/app/metadata`)
+      .then(async (res) => {
+        if (!res.ok) throw new Error("Metadata request failed");
+        const text = await res.text();
+        try {
+          return JSON.parse(text) as AppMetadata;
+        } catch {
+          throw new Error("Response is not valid JSON");
+        }
+      })
+      .then((meta) => {
+        setAppMetadata(meta);
+      })
+      .catch((err: any) => {
+        if (typeof process === "undefined" || process.env.NODE_ENV !== "test") {
+          console.warn("Could not load GitHub App metadata:", err.message || err);
+        }
+      });
+  }, []);
+
+  React.useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const installationId = params.get("installation_id");
+    const workerUrl = import.meta.env.VITE_GITHUB_AUTH_WORKER_URL;
+
+    if (installationId && workerUrl) {
+      setStatus("Exchanging GitHub App installation token...");
+      fetch(`${workerUrl}/github/app/installation-token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ installation_id: Number(installationId) })
+      })
+        .then((res) => {
+          if (!res.ok) throw new Error(`Status ${res.status}`);
+          return res.json() as Promise<{ token: string }>;
+        })
+        .then((data) => {
+          setState((current) => ({
+            ...current,
+            accessToken: data.token,
+            installationId: installationId
+          }));
+          setStatus("GitHub connected successfully!");
+          addEvent("auth", `Authenticated App Installation ${installationId}`);
+
+          const cleanUrl = window.location.pathname + window.location.hash;
+          window.history.replaceState({}, document.title, cleanUrl);
+        })
+        .catch((err) => {
+          setStatus(`GitHub authentication failed: ${err.message}`);
+          addEvent("auth", `Authentication failed: ${err.message}`);
+        });
+    }
+  }, []);
+
+  const [repoEntries, setRepoEntries] = React.useState<readonly RepositoryEntry[]>([]);
+
+  React.useEffect(() => {
+    if (!state.repository) {
+      setRepoEntries([]);
+      return;
+    }
+
+    activeGithubClient
+      .getRepositoryEntries({
+        owner: state.repository.owner,
+        repo: state.repository.repo,
+        branch: state.repository.branch
+      })
+      .then((entries) => {
+        setRepoEntries(entries);
+      })
+      .catch((err: any) => {
+        setStatus(`Failed to read repository layout: ${err.message}`);
+      });
+  }, [state.repository, activeGithubClient]);
+
+  React.useEffect(() => {
+    if (!state.repository) return;
+
+    activeGithubClient
+      .getFileContent(
+        {
+          owner: state.repository.owner,
+          repo: state.repository.repo,
+          branch: state.repository.branch
+        },
+        RepositoryLayout.seoConfig
+      )
+      .then((content) => {
+        if (!content) return;
+        const match = content.match(/googleAnalyticsId:\s*["']([^"']+)["']/);
+        if (match && match[1]) {
+          setState((curr) => ({ ...curr, googleAnalyticsId: match[1] }));
+        }
+      })
+      .catch((err) => {
+        console.warn("Could not read config/seo.ts on repository connect:", err);
+      });
+  }, [state.repository, activeGithubClient]);
+
   const seoInput = {
     title: state.activeDraft.title,
     description: state.activeDraft.description,
@@ -180,7 +369,12 @@ function CmsApplication() {
   const seo = generateSeoMetadata(seoInput);
   const seoScore = scoreSeo(seoInput);
   const outline = extractOutline(state.activeDraft.markdown);
-  const repositoryValidation = validateRepositoryStructure(requiredRepositoryEntries);
+  const repositoryValidation = React.useMemo(() => {
+    if (!state.repository) {
+      return { ok: false, error: { message: "No repository connected", details: { missing: [] } } };
+    }
+    return validateRepositoryStructure(repoEntries);
+  }, [state.repository, repoEntries]);
 
   function addEvent(stage: string, message: string) {
     setState((current) => ({
@@ -193,14 +387,14 @@ function CmsApplication() {
   }
 
   async function connectRepository() {
-    const repositories = await githubClient.listRepositories();
+    const repositories = await activeGithubClient.listRepositories();
     const repository = repositories[0];
     if (!repository) return;
 
     setState((current) => ({
       ...current,
       repository: {
-        owner: "local",
+        owner: repository.fullName.split("/")[0] || "local",
         repo: repository.name,
         branch: repository.defaultBranch,
         fullName: repository.fullName
@@ -208,6 +402,14 @@ function CmsApplication() {
     }));
     setStatus(`Connected ${repository.fullName}`);
     addEvent("repository", `Connected ${repository.fullName}`);
+  }
+
+  function handleConnectGitHub() {
+    if (appMetadata) {
+      window.location.href = `${appMetadata.htmlUrl}/installations/new`;
+    } else {
+      connectRepository();
+    }
   }
 
   function updateDraft(patch: Partial<DraftRecord>) {
@@ -249,17 +451,81 @@ function CmsApplication() {
     addEvent("media", `Planned ${planned.value.location.path}`);
   }
 
-  function createAiSuggestion() {
-    const suggestion = createSuggestion(
-      {
-        kind: "improve-writing",
-        selectedText: state.activeDraft.description,
-        contextMarkdown: state.activeDraft.markdown
-      },
-      `${state.activeDraft.description} This draft is ready for a clearer reader promise.`
-    );
-    setState((current) => ({ ...current, aiSuggestion: suggestion.content }));
-    addEvent("ai", "AI suggestion prepared for approval");
+  async function ensureDecryptedKey(): Promise<string | null> {
+    if (state.geminiApiKey) return state.geminiApiKey;
+    if (!state.geminiEncryptedKey) return null;
+
+    const passphrase = prompt("Enter your passphrase to decrypt your Gemini API Key:");
+    if (!passphrase) return null;
+
+    try {
+      const decrypted = await decryptData(state.geminiEncryptedKey, passphrase);
+      setState((curr) => ({ ...curr, geminiApiKey: decrypted }));
+      return decrypted;
+    } catch {
+      alert("Incorrect passphrase. Failed to decrypt API key.");
+      return null;
+    }
+  }
+
+  async function handleSaveGeminiKey(key: string, passphrase?: string) {
+    if (passphrase) {
+      try {
+        const encrypted = await encryptData(key, passphrase);
+        setState((curr) => ({
+          ...curr,
+          geminiApiKey: key,
+          geminiEncryptedKey: encrypted
+        }));
+        setStatus("Gemini API key encrypted and saved locally.");
+      } catch (err: any) {
+        alert(`Encryption failed: ${err.message}`);
+      }
+    } else {
+      setState((curr) => ({
+        ...curr,
+        geminiApiKey: key,
+        geminiEncryptedKey: ""
+      }));
+      setStatus("Gemini API key saved in memory for this session.");
+    }
+  }
+
+  function handleClearGeminiKey() {
+    setState((curr) => ({
+      ...curr,
+      geminiApiKey: "",
+      geminiEncryptedKey: ""
+    }));
+    setStatus("Gemini API key cleared.");
+  }
+
+  async function createAiSuggestion() {
+    try {
+      const apiKey = await ensureDecryptedKey();
+      if (!apiKey) {
+        setStatus("Please configure your Gemini API Key in Settings first.");
+        addEvent("ai", "Suggestion aborted: API key missing");
+        return;
+      }
+
+      setStatus("Generating AI suggestion with Gemini...");
+      const suggestion = await generateGeminiSuggestion(
+        {
+          kind: "improve-writing",
+          selectedText: state.activeDraft.description,
+          contextMarkdown: state.activeDraft.markdown
+        },
+        apiKey
+      );
+
+      setState((current) => ({ ...current, aiSuggestion: suggestion.content }));
+      setStatus("AI suggestion prepared.");
+      addEvent("ai", "AI suggestion prepared for approval");
+    } catch (err: any) {
+      setStatus(`AI suggestion failed: ${err.message}`);
+      addEvent("ai", `AI suggestion failed: ${err.message}`);
+    }
   }
 
   function approveAiSuggestion() {
@@ -287,7 +553,7 @@ function CmsApplication() {
       return;
     }
 
-    const result = await githubClient.executeCommit(
+    const result = await activeGithubClient.executeCommit(
       manifestToCommitRequest(state.repository, plan.value.commit)
     );
     setState((current) => ({
@@ -330,7 +596,7 @@ function CmsApplication() {
       return;
     }
 
-    const result = await githubClient.executeCommit(
+    const result = await activeGithubClient.executeCommit(
       manifestToCommitRequest(state.repository, plan.value.commit)
     );
     setState((current) => ({
@@ -405,7 +671,7 @@ function CmsApplication() {
                   status={status}
                   seoScore={seoScore}
                   repositoryValid={repositoryValidation.ok}
-                  onConnect={connectRepository}
+                  onConnect={handleConnectGitHub}
                 />
               }
             />
@@ -437,7 +703,19 @@ function CmsApplication() {
               element={<SearchPage posts={state.posts} drafts={state.drafts} />}
             />
             <Route path="/analytics" element={<AnalyticsPage />} />
-            <Route path="/settings" element={<SettingsPage repository={state.repository} />} />
+            <Route
+              path="/settings"
+              element={
+                <SettingsPage
+                  repository={state.repository}
+                  geminiApiKey={state.geminiApiKey || ""}
+                  geminiEncrypted={Boolean(state.geminiEncryptedKey)}
+                  googleAnalyticsId={state.googleAnalyticsId}
+                  onSaveGeminiKey={handleSaveGeminiKey}
+                  onClearGeminiKey={handleClearGeminiKey}
+                />
+              }
+            />
           </Routes>
         </main>
       </div>
@@ -836,7 +1114,29 @@ function AnalyticsPage() {
   );
 }
 
-function SettingsPage({ repository }: { readonly repository?: ConnectedRepository }) {
+function SettingsPage({
+  repository,
+  geminiApiKey,
+  geminiEncrypted,
+  googleAnalyticsId,
+  onSaveGeminiKey,
+  onClearGeminiKey
+}: {
+  readonly repository?: ConnectedRepository;
+  readonly geminiApiKey: string;
+  readonly geminiEncrypted: boolean;
+  readonly googleAnalyticsId?: string;
+  readonly onSaveGeminiKey: (key: string, passphrase?: string) => void;
+  readonly onClearGeminiKey: () => void;
+}) {
+  const [apiKeyInput, setApiKeyInput] = React.useState(geminiApiKey);
+  const [passphraseInput, setPassphraseInput] = React.useState("");
+  const [storeLocally, setStoreLocally] = React.useState(false);
+
+  React.useEffect(() => {
+    setApiKeyInput(geminiApiKey);
+  }, [geminiApiKey]);
+
   return (
     <>
       <PageHeader
@@ -848,6 +1148,77 @@ function SettingsPage({ repository }: { readonly repository?: ConnectedRepositor
           <Metric label="Repository" value={repository?.fullName ?? "Not connected"} />
           <Metric label="Branch" value={repository?.branch ?? "main"} />
         </Panel>
+        
+        <Panel title="Google Analytics">
+          <Metric label="Measurement ID" value={googleAnalyticsId || "Not configured"} />
+          <p className="mt-2 text-xs text-zinc-500">
+            This ID is loaded dynamically from config/seo.ts in your repository.
+          </p>
+        </Panel>
+
+        <Panel title="Gemini AI (BYOK)">
+          <div className="space-y-4">
+            <Field label="Gemini API Key">
+              <input
+                type="password"
+                placeholder={geminiApiKey ? "••••••••••••••••" : "Enter your Gemini API key"}
+                value={apiKeyInput}
+                onChange={(e) => setApiKeyInput(e.target.value)}
+                className="w-full rounded-md border border-zinc-300 p-2 text-sm focus:border-zinc-950 focus:outline-none"
+              />
+            </Field>
+
+            <div className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                id="storeLocally"
+                checked={storeLocally}
+                onChange={(e) => setStoreLocally(e.target.checked)}
+                className="rounded border-zinc-300 text-zinc-950 focus:ring-zinc-950"
+              />
+              <label htmlFor="storeLocally" className="text-sm font-medium text-zinc-700">
+                Encrypt and save locally (requires passphrase)
+              </label>
+            </div>
+
+            {storeLocally && (
+              <Field label="Passphrase">
+                <input
+                  type="password"
+                  placeholder="Enter passphrase to encrypt key"
+                  value={passphraseInput}
+                  onChange={(e) => setPassphraseInput(e.target.value)}
+                  className="w-full rounded-md border border-zinc-300 p-2 text-sm focus:border-zinc-950 focus:outline-none"
+                />
+              </Field>
+            )}
+
+            <div className="flex gap-2">
+              <Button
+                onClick={() => onSaveGeminiKey(apiKeyInput, storeLocally ? passphraseInput : undefined)}
+                disabled={!apiKeyInput}
+              >
+                Save API Key
+              </Button>
+              {geminiApiKey && (
+                <Button variant="ghost" onClick={onClearGeminiKey}>
+                  Clear Key
+                </Button>
+              )}
+            </div>
+
+            <div className="text-xs text-zinc-500">
+              {geminiEncrypted ? (
+                <span className="text-green-600 font-medium">✓ Key is encrypted and stored locally</span>
+              ) : geminiApiKey ? (
+                <span className="text-blue-600 font-medium">✓ Key is loaded for this session only</span>
+              ) : (
+                <span>No API key set. Connect a key to enable AI Suggest.</span>
+              )}
+            </div>
+          </div>
+        </Panel>
+
         <Panel title="Security">
           <p className="text-sm text-zinc-600">
             Access tokens belong to the user session. The CMS does not introduce a traditional

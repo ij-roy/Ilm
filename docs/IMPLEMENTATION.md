@@ -74,8 +74,9 @@ Implement:
 - Loading states
 - Production empty states
 - `workers/github-auth`
-- GitHub authentication
+- GitHub App authentication
 - GitHub auth worker integration
+- GitHub App callback route
 - Repository selection
 - Session persistence
 - Logout
@@ -196,7 +197,7 @@ apps/
   cms/                -> Main CMS application
 
 workers/
-  github-auth/        -> Stateless GitHub OAuth infrastructure
+  github-auth/        -> Stateless GitHub App auth infrastructure
 
 packages/
   ui/                 -> Shared UI components

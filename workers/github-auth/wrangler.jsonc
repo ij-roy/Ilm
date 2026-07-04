@@ -2,5 +2,9 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "ilm-github-auth",
   "main": "src/index.ts",
-  "compatibility_date": "2026-07-03"
+  "compatibility_date": "2026-07-03",
+  "vars": {
+    "GITHUB_APP_ID": "4216734",
+    "ALLOWED_ORIGIN": "http://127.0.0.1:5173"
+  }
 }

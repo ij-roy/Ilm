@@ -25,7 +25,7 @@ describe("@ilm/cms", () => {
     render(<App />);
 
     await user.click(screen.getByRole("button", { name: /connect github/i }));
-    expect(await screen.findAllByText("local/ilm-starter")).toHaveLength(2);
+    expect(await screen.findAllByText("ij-roy/ilm-test-blog")).toHaveLength(2);
 
     await user.click(screen.getByRole("link", { name: /editor/i }));
     await user.clear(screen.getByLabelText("Title"));

@@ -61,7 +61,8 @@ export const SeoConfigSchema = z.object({
   defaultTitle: z.string().min(1),
   defaultDescription: z.string().min(1),
   canonicalBaseUrl: z.string().url(),
-  robots: z.enum(["index,follow", "noindex,nofollow"]).default("index,follow")
+  robots: z.enum(["index,follow", "noindex,nofollow"]).default("index,follow"),
+  googleAnalyticsId: z.string().optional()
 });
 
 export const NavigationConfigSchema = z.object({

@@ -33,7 +33,7 @@ describe("@ilm/github", () => {
       ]
     });
 
-    expect(repositories[0]?.fullName).toBe("local/ilm-starter");
+    expect(repositories[0]?.fullName).toBe("ij-roy/ilm-test-blog");
     expect(result.fileCount).toBe(1);
     expect(result.sha).toMatch(/[0-9a-f]+/);
   });
