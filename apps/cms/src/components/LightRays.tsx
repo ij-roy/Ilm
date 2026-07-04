@@ -1,5 +1,5 @@
 import { useRef, useEffect, useState } from "react";
-// @ts-expect-error no types for ogl by default
+
 import { Renderer, Program, Triangle, Mesh } from "ogl";
 
 const DEFAULT_COLOR = "#ffffff";

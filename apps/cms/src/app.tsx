@@ -52,8 +52,10 @@ import {
   validateRepositoryStructure
 } from "@ilm/repository";
 import { generateSeoMetadata, generateSlug, scoreSeo } from "@ilm/seo";
-import { Button } from "@ilm/ui";
 import { LandingPage } from "./landing";
+import { DocsPage } from "./docs";
+import { PrivacyPage } from "./privacy";
+import { Button } from "@ilm/ui";
 
 type ConnectedRepository = {
   readonly owner: string;
@@ -723,6 +725,12 @@ function CmsApplication() {
   if (location.pathname === "/") {
     return <LandingPage onConnectGitHub={handleConnectGitHub} />;
   }
+  if (location.pathname === "/docs") {
+    return <DocsPage onConnectGitHub={handleConnectGitHub} />;
+  }
+  if (location.pathname === "/privacy") {
+    return <PrivacyPage onConnectGitHub={handleConnectGitHub} />;
+  }
 
   return (
     <div className="min-h-screen bg-zinc-50 text-zinc-950">
@@ -852,7 +860,9 @@ function Dashboard({
   seoScore,
   repositoryValid,
   onConnect,
-  onSelectRepository
+  onSelectRepository,
+  onDisconnectRepository,
+  onConfigureRepositories
 }: {
   readonly state: CmsState;
   readonly status: string;
