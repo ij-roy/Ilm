@@ -1,0 +1,112 @@
+---
+import { fileURLToPath } from "node:url";
+import { readFile } from "node:fs/promises";
+
+let googleAnalyticsId: string | undefined = undefined;
+try {
+  const configPath = fileURLToPath(new URL("../../../config/seo.ts", import.meta.url));
+  const content = await readFile(configPath, "utf-8");
+  const match = content.match(/googleAnalyticsId:\s*["']([^"']+)["']/);
+  if (match && match[1]) {
+    googleAnalyticsId = match[1];
+  }
+} catch {
+  googleAnalyticsId = undefined;
+}
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width" />
+    <title>Search | Ilm Starter</title>
+
+    {googleAnalyticsId && (
+      <>
+        <script type="text/javascript" async src={`https://www.googletagmanager.com/gtag/js?id=${googleAnalyticsId}`}></script>
+        <script type="text/javascript" is:inline define:vars={{ googleAnalyticsId }}>
+          window.dataLayer = window.dataLayer || [];
+          function gtag(){dataLayer.push(arguments);}
+          gtag('js', new Date());
+          gtag('config', googleAnalyticsId);
+        </script>
+      </>
+    )}
+    
+    <style>
+      body { font-family: sans-serif; line-height: 1.5; color: #0f172a; }
+      .search-container { max-width: 600px; margin: 2rem auto; }
+      input { width: 100%; padding: 0.75rem; font-size: 1rem; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
+      .results { margin-top: 1.5rem; list-style: none; padding: 0; }
+      .results li { margin-bottom: 1rem; border-bottom: 1px solid #eee; padding-bottom: 1rem; }
+      .results a { text-decoration: none; color: #0f172a; font-weight: 600; font-size: 1.2rem; }
+      .results a:hover { text-decoration: underline; }
+      .results p { margin-top: 0.25rem; color: #475569; font-size: 0.9rem; }
+      .draft-badge { font-size: 0.75rem; background: #fef08a; color: #854d0e; padding: 0.1rem 0.4rem; border-radius: 9999px; margin-left: 0.5rem; vertical-align: middle; }
+    </style>
+  </head>
+  <body>
+    <div class="search-container">
+      <h1>Search</h1>
+      <a href="/">← Back Home</a>
+      <br><br>
+      <input type="search" id="search-input" placeholder="Search posts..." autofocus />
+      
+      <div id="loading" style="margin-top: 1rem; color: #666;">Loading index...</div>
+      <ul id="search-results" class="results"></ul>
+    </div>
+
+    <script>
+      let searchIndex = [];
+      const input = document.getElementById("search-input");
+      const resultsContainer = document.getElementById("search-results");
+      const loading = document.getElementById("loading");
+
+      async function initSearch() {
+        try {
+          const res = await fetch("/search.json");
+          searchIndex = await res.json();
+          loading.style.display = "none";
+          
+          input.addEventListener("input", (e) => {
+            const query = e.target.value.toLowerCase().trim();
+            if (!query) {
+              resultsContainer.innerHTML = "";
+              return;
+            }
+            
+            const matches = searchIndex.filter((post) => {
+              // Null safety just in case
+              const t = post.title || "";
+              const d = post.description || "";
+              const b = post.body || "";
+              return t.toLowerCase().includes(query) || 
+                     d.toLowerCase().includes(query) || 
+                     b.toLowerCase().includes(query);
+            });
+            
+            if (matches.length === 0) {
+              resultsContainer.innerHTML = "<li>No results found.</li>";
+              return;
+            }
+            
+            resultsContainer.innerHTML = matches.map(post => `
+              <li>
+                <a href="/posts/${post.slug}/">
+                  ${post.title}
+                  ${post.isDraft ? '<span class="draft-badge">Draft</span>' : ''}
+                </a>
+                <p>${post.description}</p>
+              </li>
+            `).join("");
+          });
+        } catch (err) {
+          loading.textContent = "Failed to load search index.";
+        }
+      }
+
+      initSearch();
+    </script>
+  </body>
+</html>

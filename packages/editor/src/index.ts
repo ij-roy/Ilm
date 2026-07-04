@@ -45,3 +45,71 @@ export function isLocalDraftNewer(local: LocalDraftSnapshot, remoteUpdatedAt?: s
   if (!remoteUpdatedAt) return true;
   return new Date(local.updatedAt).getTime() > new Date(remoteUpdatedAt).getTime();
 }
+
+import StarterKit from "@tiptap/starter-kit";
+import Image from "@tiptap/extension-image";
+import Link from "@tiptap/extension-link";
+import Placeholder from "@tiptap/extension-placeholder";
+import { Markdown } from "tiptap-markdown";
+import { Extension } from "@tiptap/core";
+import { Plugin, PluginKey } from "@tiptap/pm/state";
+
+export const ImageUploadExtension = Extension.create({
+  name: "imageUpload",
+
+  addProseMirrorPlugins() {
+    return [
+      new Plugin({
+        key: new PluginKey("imageUpload"),
+        props: {
+          handleDrop(view, event, slice, moved) {
+            if (!moved && event.dataTransfer && event.dataTransfer.files && event.dataTransfer.files.length > 0) {
+              const file = event.dataTransfer.files[0];
+              if (!file.type.startsWith("image/")) return false;
+              
+              event.preventDefault();
+              const coords = view.posAtCoords({ left: event.clientX, top: event.clientY });
+              const customEvent = new CustomEvent("ilm:upload-image", { 
+                detail: { file, pos: coords?.pos ?? view.state.selection.from } 
+              });
+              window.dispatchEvent(customEvent);
+              return true;
+            }
+            return false;
+          },
+          handlePaste(view, event, slice) {
+            if (event.clipboardData && event.clipboardData.files && event.clipboardData.files.length > 0) {
+              const file = event.clipboardData.files[0];
+              if (!file.type.startsWith("image/")) return false;
+
+              event.preventDefault();
+              const customEvent = new CustomEvent("ilm:upload-image", { 
+                detail: { file, pos: view.state.selection.from } 
+              });
+              window.dispatchEvent(customEvent);
+              return true;
+            }
+            return false;
+          }
+        }
+      })
+    ];
+  }
+});
+
+export const defaultEditorExtensions = [
+  StarterKit.configure({
+    heading: {
+      levels: [1, 2, 3]
+    }
+  }),
+  Image,
+  Link.configure({
+    openOnClick: false
+  }),
+  Placeholder.configure({
+    placeholder: "Write your next masterpiece..."
+  }),
+  Markdown,
+  ImageUploadExtension
+];

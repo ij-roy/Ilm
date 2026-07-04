@@ -11,8 +11,11 @@
     "typecheck": "astro check || tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@astrojs/rss": "^4.0.19",
+    "@astrojs/sitemap": "^3.7.3",
     "astro": "7.0.6",
-    "gray-matter": "4.0.3"
+    "gray-matter": "4.0.3",
+    "marked": "^18.0.5"
   },
   "devDependencies": {
     "@astrojs/check": "0.9.9",

@@ -1,6 +1,7 @@
 export interface Env {
   readonly GITHUB_APP_ID: string;
   readonly GITHUB_APP_PRIVATE_KEY?: string;
+  readonly GITHUB_CLIENT_SECRET?: string;
   readonly ALLOWED_ORIGIN?: string;
 }
 
@@ -126,64 +127,70 @@ async function signJwt(appId: string, privateKeyPem: string): Promise<string> {
   return `${signingInput}.${signatureStr}`;
 }
 
-async function prepareInstallationToken(request: Request, env: Env): Promise<Response> {
-  const body = (await request.json()) as InstallationTokenRequestBody;
-  if (!body.installation_id) {
-    return json({ error: "Missing required GitHub App installation_id" }, { status: 400 }, env);
-  }
-
-  if (!env.GITHUB_APP_PRIVATE_KEY) {
-    return json({ error: "GITHUB_APP_PRIVATE_KEY is not configured on the worker" }, { status: 500 }, env);
-  }
-
-  try {
-    const jwt = await signJwt(env.GITHUB_APP_ID, env.GITHUB_APP_PRIVATE_KEY);
-    const response = await fetch(
-      `https://api.github.com/app/installations/${body.installation_id}/access_tokens`,
-      {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${jwt}`,
-          "Accept": "application/vnd.github+json",
-          "User-Agent": "ilm-github-auth"
-        }
-      }
-    );
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      return json(
-        { error: "GitHub API error during token exchange", details: errorText },
-        { status: response.status },
-        env
-      );
-    }
-
-    const tokenData = await response.json();
-    return json(tokenData, { status: 200 }, env);
-  } catch (err: any) {
-    return json(
-      { error: "Failed to exchange installation token", details: err.message },
-      { status: 500 },
-      env
-    );
-  }
-}
-
-function handleGitHubAppCallback(url: URL, env: Env): Response {
+async function handleGitHubAppCallback(url: URL, env: Env): Promise<Response> {
   const code = url.searchParams.get("code");
   const installationId = url.searchParams.get("installation_id");
 
   const redirectUrl = new URL(env.ALLOWED_ORIGIN || "http://127.0.0.1:5173");
   redirectUrl.pathname = "/dashboard";
-  if (installationId) {
-    redirectUrl.searchParams.set("installation_id", installationId);
-  }
-  if (code) {
-    redirectUrl.searchParams.set("code", code);
+
+  if (!code) {
+    if (installationId) redirectUrl.searchParams.set("installation_id", installationId);
+    return Response.redirect(redirectUrl.toString(), 302);
   }
 
-  return Response.redirect(redirectUrl.toString(), 302);
+  if (!env.GITHUB_APP_PRIVATE_KEY || !env.GITHUB_CLIENT_SECRET) {
+    redirectUrl.searchParams.set("error", "missing_worker_secrets");
+    return Response.redirect(redirectUrl.toString(), 302);
+  }
+
+  try {
+    const jwt = await signJwt(env.GITHUB_APP_ID, env.GITHUB_APP_PRIVATE_KEY);
+    const appRes = await fetch("https://api.github.com/app", {
+      headers: { Authorization: `Bearer ${jwt}`, "User-Agent": "ilm-github-auth" }
+    });
+    const appData = await appRes.json() as any;
+
+    const tokenRes = await fetch("https://github.com/login/oauth/access_token", {
+      method: "POST",
+      headers: { "Accept": "application/json", "Content-Type": "application/json" },
+      body: JSON.stringify({
+        client_id: appData.client_id,
+        client_secret: env.GITHUB_CLIENT_SECRET,
+        code
+      })
+    });
+    const tokenData = await tokenRes.json() as any;
+    const userToken = tokenData.access_token;
+
+    if (!userToken) {
+      redirectUrl.searchParams.set("error", "auth_failed");
+      return Response.redirect(redirectUrl.toString(), 302);
+    }
+
+    const instRes = await fetch("https://api.github.com/user/installations", {
+      headers: { Authorization: `Bearer ${userToken}`, "User-Agent": "ilm-github-auth" }
+    });
+    const instData = await instRes.json() as any;
+
+    if (!instData.installations || instData.installations.length === 0) {
+      return Response.redirect(`${appData.html_url}/installations/new`, 302);
+    }
+
+    const targetInstallationId = instData.installations[0].id;
+    const accessRes = await fetch(`https://api.github.com/app/installations/${targetInstallationId}/access_tokens`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${jwt}`, "User-Agent": "ilm-github-auth", "Accept": "application/vnd.github+json" }
+    });
+    const accessData = await accessRes.json() as any;
+
+    redirectUrl.searchParams.set("installation_id", targetInstallationId.toString());
+    redirectUrl.searchParams.set("access_token", accessData.token);
+    return Response.redirect(redirectUrl.toString(), 302);
+  } catch (err: any) {
+    redirectUrl.searchParams.set("error", "callback_crash");
+    return Response.redirect(redirectUrl.toString(), 302);
+  }
 }
 
 async function handleGetAppMetadata(env: Env): Promise<Response> {
@@ -252,10 +259,6 @@ export default {
 
     if (url.pathname === "/github/app/metadata" && request.method === "GET") {
       return handleGetAppMetadata(env);
-    }
-
-    if (url.pathname === "/github/app/installation-token" && request.method === "POST") {
-      return prepareInstallationToken(request, env);
     }
 
     if (url.pathname === "/github/app/callback" && request.method === "GET") {

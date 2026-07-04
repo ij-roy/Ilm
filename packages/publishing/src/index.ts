@@ -72,6 +72,7 @@ export type PublishInput = {
   readonly markdown: string;
   readonly title: string;
   readonly draftSlug?: string;
+  readonly hasRemoteDraft?: boolean;
   readonly frontmatter?: PostFrontmatter;
   readonly media?: readonly PlannedMediaWrite[];
 };
@@ -127,7 +128,7 @@ export function createPublishPlan(input: PublishInput): Result<PublishPlan, AppE
       message: `publish: ${input.title}`,
       files: [
         { path: postPath, content, encoding: "utf-8", operation: "upsert" },
-        ...(draftPath
+        ...(draftPath && input.hasRemoteDraft
           ? [
               {
                 path: draftPath,

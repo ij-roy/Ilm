@@ -12,14 +12,24 @@ import {
   Search,
   Settings,
   Sparkles,
-  UploadCloud
+  UploadCloud,
+  Bold,
+  Italic,
+  Code,
+  Quote,
+  Heading1,
+  Heading2,
+  Heading3,
+  List,
+  ListOrdered
 } from "lucide-react";
-import { createSuggestion, generateGeminiSuggestion } from "@ilm/ai";
+import { createSuggestion, generateGeminiSuggestion, AiSuggestion, AiSuggestionKind } from "@ilm/ai";
 import { createGoogleOAuthUrl } from "@ilm/analytics";
-import { estimateReadingTimeMinutes, extractOutline, isLocalDraftNewer } from "@ilm/editor";
-import { GitHubClient, LocalGitHubClient, manifestToCommitRequest } from "@ilm/github";
-import { planMediaAsset } from "@ilm/media";
-import { createDraftSavePlan, createPublishPlan, validatePublishPlan } from "@ilm/publishing";
+import { estimateReadingTimeMinutes, extractOutline, isLocalDraftNewer, defaultEditorExtensions } from "@ilm/editor";
+import { useEditor, EditorContent } from "@tiptap/react";
+import { GitHubClient, LocalGitHubClient, manifestToCommitRequest, GitHubRepositorySummary } from "@ilm/github";
+import { planMediaAsset, convertImageToWebP } from "@ilm/media";
+import { createDraftSavePlan, createPublishPlan, validatePublishPlan, PublishProgressStage } from "@ilm/publishing";
 import {
   DraftFrontmatter,
   RepositoryEntry,
@@ -59,6 +69,7 @@ type MediaRecord = {
   readonly alt: string;
   readonly caption: string;
   readonly path: string;
+  readonly contentBase64?: string;
 };
 
 type PublishEvent = {
@@ -77,12 +88,14 @@ type AppMetadata = {
 
 type CmsState = {
   readonly repository?: ConnectedRepository;
+  readonly availableRepositories?: readonly GitHubRepositorySummary[];
   readonly activeDraft: DraftRecord;
   readonly drafts: readonly DraftRecord[];
   readonly posts: readonly DraftRecord[];
   readonly media: readonly MediaRecord[];
   readonly events: readonly PublishEvent[];
-  readonly aiSuggestion?: string;
+  readonly aiSuggestion?: AiSuggestion;
+  readonly publishProgress?: PublishProgressStage;
   readonly accessToken?: string;
   readonly installationId?: string;
   readonly geminiApiKey?: string;
@@ -113,7 +126,7 @@ async function deriveKey(passphrase: string, salt: Uint8Array): Promise<CryptoKe
   return window.crypto.subtle.deriveKey(
     {
       name: "PBKDF2",
-      salt,
+      salt: salt as any,
       iterations: 100000,
       hash: "SHA-256"
     },
@@ -281,35 +294,23 @@ function CmsApplication() {
   React.useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const installationId = params.get("installation_id");
-    const workerUrl = import.meta.env.VITE_GITHUB_AUTH_WORKER_URL;
+    const accessToken = params.get("access_token");
+    const errorMsg = params.get("error");
 
-    if (installationId && workerUrl) {
-      setStatus("Exchanging GitHub App installation token...");
-      fetch(`${workerUrl}/github/app/installation-token`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ installation_id: Number(installationId) })
-      })
-        .then((res) => {
-          if (!res.ok) throw new Error(`Status ${res.status}`);
-          return res.json() as Promise<{ token: string }>;
-        })
-        .then((data) => {
-          setState((current) => ({
-            ...current,
-            accessToken: data.token,
-            installationId: installationId
-          }));
-          setStatus("GitHub connected successfully!");
-          addEvent("auth", `Authenticated App Installation ${installationId}`);
+    if (errorMsg) {
+      setStatus(`GitHub connection failed: ${errorMsg}`);
+      addEvent("auth", `Auth error: ${errorMsg}`);
+    } else if (installationId && accessToken) {
+      setState((current) => ({
+        ...current,
+        accessToken: accessToken,
+        installationId: installationId
+      }));
+      setStatus("GitHub connected successfully!");
+      addEvent("auth", `Authenticated App Installation ${installationId}`);
 
-          const cleanUrl = window.location.pathname + window.location.hash;
-          window.history.replaceState({}, document.title, cleanUrl);
-        })
-        .catch((err) => {
-          setStatus(`GitHub authentication failed: ${err.message}`);
-          addEvent("auth", `Authentication failed: ${err.message}`);
-        });
+      const cleanUrl = window.location.pathname + window.location.hash;
+      window.history.replaceState({}, document.title, cleanUrl);
     }
   }, []);
 
@@ -386,9 +387,17 @@ function CmsApplication() {
     }));
   }
 
-  async function connectRepository() {
-    const repositories = await activeGithubClient.listRepositories();
-    const repository = repositories[0];
+  async function loadRepositories() {
+    try {
+      const repositories = await activeGithubClient.listRepositories();
+      setState((curr) => ({ ...curr, availableRepositories: repositories }));
+    } catch (err: any) {
+      setStatus(`Failed to load repositories: ${err.message}`);
+    }
+  }
+
+  function selectRepository(repoId: number) {
+    const repository = state.availableRepositories?.find(r => r.id === repoId);
     if (!repository) return;
 
     setState((current) => ({
@@ -398,7 +407,8 @@ function CmsApplication() {
         repo: repository.name,
         branch: repository.defaultBranch,
         fullName: repository.fullName
-      }
+      },
+      availableRepositories: undefined // clear the list once connected
     }));
     setStatus(`Connected ${repository.fullName}`);
     addEvent("repository", `Connected ${repository.fullName}`);
@@ -406,9 +416,7 @@ function CmsApplication() {
 
   function handleConnectGitHub() {
     if (appMetadata) {
-      window.location.href = `${appMetadata.htmlUrl}/installations/new`;
-    } else {
-      connectRepository();
+      window.location.href = `https://github.com/login/oauth/authorize?client_id=${appMetadata.clientId}`;
     }
   }
 
@@ -500,7 +508,7 @@ function CmsApplication() {
     setStatus("Gemini API key cleared.");
   }
 
-  async function createAiSuggestion() {
+  async function createAiSuggestion(kind: AiSuggestionKind) {
     try {
       const apiKey = await ensureDecryptedKey();
       if (!apiKey) {
@@ -509,19 +517,26 @@ function CmsApplication() {
         return;
       }
 
-      setStatus("Generating AI suggestion with Gemini...");
+      setStatus(`Generating AI suggestion (${kind})...`);
+      
+      // Determine what text to analyze based on the kind
+      let selectedText = state.activeDraft.description;
+      if (kind === "fix-grammar" || kind === "rewrite") {
+        selectedText = state.activeDraft.markdown; // Or ideally current editor selection if we wired that up
+      }
+
       const suggestion = await generateGeminiSuggestion(
         {
-          kind: "improve-writing",
-          selectedText: state.activeDraft.description,
+          kind,
+          selectedText,
           contextMarkdown: state.activeDraft.markdown
         },
         apiKey
       );
 
-      setState((current) => ({ ...current, aiSuggestion: suggestion.content }));
+      setState((current) => ({ ...current, aiSuggestion: suggestion }));
       setStatus("AI suggestion prepared.");
-      addEvent("ai", "AI suggestion prepared for approval");
+      addEvent("ai", `AI suggestion prepared: ${kind}`);
     } catch (err: any) {
       setStatus(`AI suggestion failed: ${err.message}`);
       addEvent("ai", `AI suggestion failed: ${err.message}`);
@@ -530,9 +545,31 @@ function CmsApplication() {
 
   function approveAiSuggestion() {
     if (!state.aiSuggestion) return;
-    updateDraft({ description: state.aiSuggestion });
+    
+    let patch: Partial<DraftRecord> = {};
+    const { kind, content } = state.aiSuggestion;
+    
+    switch (kind) {
+      case "improve-writing":
+      case "summarize":
+      case "social-post":
+        patch = { description: content };
+        break;
+      case "tags":
+        patch = { tags: content };
+        break;
+      case "categories":
+        patch = { categories: content };
+        break;
+      case "fix-grammar":
+      case "rewrite":
+        patch = { markdown: content };
+        break;
+    }
+    
+    updateDraft(patch);
     setState((current) => ({ ...current, aiSuggestion: undefined }));
-    addEvent("ai", "AI suggestion approved");
+    addEvent("ai", `AI suggestion approved: ${kind}`);
   }
 
   async function saveDraft() {
@@ -576,6 +613,7 @@ function CmsApplication() {
       title: state.activeDraft.title,
       markdown: state.activeDraft.markdown,
       draftSlug: state.activeDraft.slug,
+      hasRemoteDraft: !!state.activeDraft.savedSha,
       frontmatter: {
         ...buildDraftFrontmatter(state.activeDraft),
         description: state.activeDraft.description,
@@ -596,17 +634,55 @@ function CmsApplication() {
       return;
     }
 
-    const result = await activeGithubClient.executeCommit(
-      manifestToCommitRequest(state.repository, plan.value.commit)
-    );
+    setState(c => ({ ...c, publishProgress: "creating-commit" }));
+    setStatus("Committing post to GitHub...");
+
+    let result;
+    try {
+      result = await activeGithubClient.executeCommit(
+        manifestToCommitRequest(state.repository, plan.value.commit)
+      );
+    } catch (err: any) {
+      setState(c => ({ ...c, publishProgress: "failed" }));
+      setStatus(`Commit failed: ${err.message}`);
+      return;
+    }
+
     setState((current) => ({
       ...current,
       activeDraft: { ...current.activeDraft, publishedSha: result.sha },
       posts: upsertById(current.posts, { ...current.activeDraft, publishedSha: result.sha }),
-      drafts: current.drafts.filter((draft) => draft.id !== current.activeDraft.id)
+      drafts: current.drafts.filter((draft) => draft.id !== current.activeDraft.id),
+      publishProgress: "building"
     }));
-    setStatus(`Published at ${result.sha}`);
-    addEvent("publish", `Published ${plan.value.postPath}`);
+    setStatus(`Committed at ${result.sha}. Waiting for deployment...`);
+    addEvent("publish", `Committed ${plan.value.postPath}`);
+
+    for (let attempts = 0; attempts < 30; attempts++) {
+      await new Promise(res => setTimeout(res, 2000));
+      
+      try {
+        const status = await activeGithubClient.getWorkflowStatus(state.repository);
+        if (status === "completed") {
+          setState(c => ({ ...c, publishProgress: "published" }));
+          setStatus("Published successfully!");
+          addEvent("publish", "GitHub Pages deployment completed");
+          break;
+        } else if (status === "failed") {
+          setState(c => ({ ...c, publishProgress: "failed" }));
+          setStatus("GitHub Actions build failed. Check repository logs.");
+          addEvent("publish", "Build failed");
+          break;
+        } else if (status === "in_progress") {
+          setState(c => ({ ...c, publishProgress: "deploying" }));
+          setStatus("Deploying via GitHub Actions...");
+        }
+      } catch (err) {
+        setState(c => ({ ...c, publishProgress: "failed" }));
+        setStatus("Failed to read workflow status.");
+        break;
+      }
+    }
   }
 
   const localRecoveryAvailable = isLocalDraftNewer(
@@ -618,6 +694,12 @@ function CmsApplication() {
     },
     state.activeDraft.savedSha ? state.activeDraft.updatedAt : undefined
   );
+
+  React.useEffect(() => {
+    if (state.accessToken && !state.repository && !state.availableRepositories) {
+      loadRepositories();
+    }
+  }, [state.accessToken, state.repository, state.availableRepositories]);
 
   return (
     <div className="min-h-screen bg-zinc-50 text-zinc-950">
@@ -672,6 +754,7 @@ function CmsApplication() {
                   seoScore={seoScore}
                   repositoryValid={repositoryValidation.ok}
                   onConnect={handleConnectGitHub}
+                  onSelectRepository={selectRepository}
                 />
               }
             />
@@ -681,7 +764,7 @@ function CmsApplication() {
                 <EditorPage
                   draft={state.activeDraft}
                   seoScore={seoScore}
-                  seoUrl={seo.canonicalUrl}
+                  seoMetadata={seo}
                   outline={outline}
                   readingTime={estimateReadingTimeMinutes(state.activeDraft.markdown)}
                   aiSuggestion={state.aiSuggestion}
@@ -692,6 +775,7 @@ function CmsApplication() {
                   onApproveSuggestion={approveAiSuggestion}
                   onSaveDraft={saveDraft}
                   onPublish={publishPost}
+                  onAddMedia={addMedia}
                 />
               }
             />
@@ -743,13 +827,15 @@ function Dashboard({
   status,
   seoScore,
   repositoryValid,
-  onConnect
+  onConnect,
+  onSelectRepository
 }: {
   readonly state: CmsState;
   readonly status: string;
   readonly seoScore: number;
   readonly repositoryValid: boolean;
   readonly onConnect: () => void;
+  readonly onSelectRepository: (repoId: number) => void;
 }) {
   return (
     <>
@@ -762,14 +848,25 @@ function Dashboard({
           title="Repository"
           value={state.repository?.fullName ?? "Disconnected"}
           icon={<FolderGit2 />}
+          loading={!state.repository && status.includes("Connecting")}
         />
         <StatusCard
           title="Contract"
           value={repositoryValid ? "Valid template" : "Needs review"}
           icon={<CheckCircle2 />}
+          loading={!state.repository && status.includes("Connecting")}
         />
-        <StatusCard title="SEO score" value={`${seoScore}/100`} icon={<Search />} />
-        <StatusCard title="Last status" value={status} icon={<UploadCloud />} />
+        <StatusCard 
+          title="SEO score" 
+          value={`${seoScore}/100`} 
+          icon={<Search />} 
+          loading={!state.repository && status.includes("Connecting")}
+        />
+        <StatusCard 
+          title="Last status" 
+          value={status} 
+          icon={<UploadCloud />} 
+        />
       </section>
       <section className="grid gap-4 px-6 pb-6 lg:grid-cols-[1fr_360px]">
         <div className="rounded-md border border-zinc-200 bg-white p-5">
@@ -795,45 +892,228 @@ function Dashboard({
             The development adapter uses the same manifest shape as GitHub commits, so save and
             publish flows are exercised without storing secrets locally.
           </p>
-          <Button className="mt-4" onClick={onConnect}>
-            <KeyRound className="h-4 w-4" />
-            Connect GitHub
-          </Button>
+          {state.repository ? (
+            <div className="mt-4 rounded-md border border-green-200 bg-green-50 p-3">
+              <p className="text-sm font-medium text-green-900">
+                Connected to {state.repository.fullName}
+              </p>
+            </div>
+          ) : state.accessToken && state.availableRepositories ? (
+            <div className="mt-4">
+              <label className="block text-sm font-medium text-zinc-700 mb-2">
+                Select your repository:
+              </label>
+              <div className="flex gap-2">
+                <select 
+                  className="flex-1 rounded-md border border-zinc-300 p-2 text-sm"
+                  onChange={(e) => {
+                    const repoId = Number(e.target.value);
+                    if (repoId) onSelectRepository(repoId);
+                  }}
+                  defaultValue=""
+                >
+                  <option value="" disabled>Choose a repository...</option>
+                  {state.availableRepositories.map(repo => (
+                    <option key={repo.id} value={repo.id}>
+                      {repo.fullName}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          ) : (
+            <Button className="mt-4" onClick={onConnect}>
+              <KeyRound className="h-4 w-4" />
+              Connect GitHub
+            </Button>
+          )}
         </div>
       </section>
     </>
   );
 }
 
+function EditorToolbar({ editor }: { readonly editor: any }) {
+  if (!editor) return null;
+
+  return (
+    <div className="mb-4 flex flex-wrap items-center gap-1 rounded-md border border-zinc-200 bg-zinc-50 p-1.5">
+      <button
+        type="button"
+        onClick={() => editor.chain().focus().toggleBold().run()}
+        className={`rounded-md p-1.5 hover:bg-zinc-200 ${editor.isActive("bold") ? "bg-zinc-200 text-zinc-900" : "text-zinc-600"}`}
+        title="Bold"
+      >
+        <Bold className="h-4 w-4" />
+      </button>
+      <button
+        type="button"
+        onClick={() => editor.chain().focus().toggleItalic().run()}
+        className={`rounded-md p-1.5 hover:bg-zinc-200 ${editor.isActive("italic") ? "bg-zinc-200 text-zinc-900" : "text-zinc-600"}`}
+        title="Italic"
+      >
+        <Italic className="h-4 w-4" />
+      </button>
+      <div className="mx-1 h-4 w-px bg-zinc-300" />
+      <button
+        type="button"
+        onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()}
+        className={`rounded-md p-1.5 hover:bg-zinc-200 ${editor.isActive("heading", { level: 1 }) ? "bg-zinc-200 text-zinc-900" : "text-zinc-600"}`}
+        title="Heading 1"
+      >
+        <Heading1 className="h-4 w-4" />
+      </button>
+      <button
+        type="button"
+        onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()}
+        className={`rounded-md p-1.5 hover:bg-zinc-200 ${editor.isActive("heading", { level: 2 }) ? "bg-zinc-200 text-zinc-900" : "text-zinc-600"}`}
+        title="Heading 2"
+      >
+        <Heading2 className="h-4 w-4" />
+      </button>
+      <button
+        type="button"
+        onClick={() => editor.chain().focus().toggleHeading({ level: 3 }).run()}
+        className={`rounded-md p-1.5 hover:bg-zinc-200 ${editor.isActive("heading", { level: 3 }) ? "bg-zinc-200 text-zinc-900" : "text-zinc-600"}`}
+        title="Heading 3"
+      >
+        <Heading3 className="h-4 w-4" />
+      </button>
+      <div className="mx-1 h-4 w-px bg-zinc-300" />
+      <button
+        type="button"
+        onClick={() => editor.chain().focus().toggleBulletList().run()}
+        className={`rounded-md p-1.5 hover:bg-zinc-200 ${editor.isActive("bulletList") ? "bg-zinc-200 text-zinc-900" : "text-zinc-600"}`}
+        title="Bullet List"
+      >
+        <List className="h-4 w-4" />
+      </button>
+      <button
+        type="button"
+        onClick={() => editor.chain().focus().toggleOrderedList().run()}
+        className={`rounded-md p-1.5 hover:bg-zinc-200 ${editor.isActive("orderedList") ? "bg-zinc-200 text-zinc-900" : "text-zinc-600"}`}
+        title="Ordered List"
+      >
+        <ListOrdered className="h-4 w-4" />
+      </button>
+      <div className="mx-1 h-4 w-px bg-zinc-300" />
+      <button
+        type="button"
+        onClick={() => editor.chain().focus().toggleBlockquote().run()}
+        className={`rounded-md p-1.5 hover:bg-zinc-200 ${editor.isActive("blockquote") ? "bg-zinc-200 text-zinc-900" : "text-zinc-600"}`}
+        title="Quote"
+      >
+        <Quote className="h-4 w-4" />
+      </button>
+      <button
+        type="button"
+        onClick={() => editor.chain().focus().toggleCode().run()}
+        className={`rounded-md p-1.5 hover:bg-zinc-200 ${editor.isActive("code") ? "bg-zinc-200 text-zinc-900" : "text-zinc-600"}`}
+        title="Code"
+      >
+        <Code className="h-4 w-4" />
+      </button>
+    </div>
+  );
+}
+
 function EditorPage({
   draft,
   seoScore,
-  seoUrl,
+  seoMetadata,
   outline,
   readingTime,
   aiSuggestion,
+  publishProgress,
   localRecoveryAvailable,
   onChange,
   onGenerateSlug,
   onSuggest,
   onApproveSuggestion,
   onSaveDraft,
-  onPublish
+  onPublish,
+  onAddMedia
 }: {
   readonly draft: DraftRecord;
   readonly seoScore: number;
-  readonly seoUrl: string;
-  readonly outline: readonly { title: string; anchor: string; level: number }[];
+  readonly seoMetadata: ReturnType<typeof generateSeoMetadata>;
+  readonly outline: readonly { readonly level: number; readonly title: string; readonly anchor: string }[];
   readonly readingTime: number;
-  readonly aiSuggestion?: string;
+  readonly aiSuggestion?: AiSuggestion;
+  readonly publishProgress?: PublishProgressStage;
   readonly localRecoveryAvailable: boolean;
   readonly onChange: (patch: Partial<DraftRecord>) => void;
   readonly onGenerateSlug: () => void;
-  readonly onSuggest: () => void;
+  readonly onSuggest: (kind: AiSuggestionKind) => void;
   readonly onApproveSuggestion: () => void;
   readonly onSaveDraft: () => void;
   readonly onPublish: () => void;
+  readonly onAddMedia: (media: Omit<MediaRecord, "id">) => void;
 }) {
+  const editor = useEditor({
+    extensions: defaultEditorExtensions,
+    content: draft.markdown,
+    onUpdate: ({ editor }) => {
+      onChange({ markdown: (editor.storage as any).markdown.getMarkdown() });
+    }
+  });
+
+  React.useEffect(() => {
+    if (editor && draft.markdown !== (editor.storage as any).markdown.getMarkdown()) {
+      editor.commands.setContent(draft.markdown);
+    }
+  }, [draft.markdown, editor]);
+
+  React.useEffect(() => {
+    async function handleUpload(e: Event) {
+      const customEvent = e as CustomEvent<{ file: File; pos: number }>;
+      const { file, pos } = customEvent.detail;
+      
+      try {
+        const webpBlob = await convertImageToWebP(file);
+        const fileName = `${Date.now()}-${file.name.replace(/\.[^/.]+$/, "")}.webp`;
+        
+        const plan = planMediaAsset({
+          kind: "image",
+          fileName,
+          mimeType: "image/webp",
+          sizeBytes: webpBlob.size,
+          alt: file.name
+        });
+
+        if (!plan.ok) return;
+
+        // Read base64
+        const reader = new FileReader();
+        reader.onload = () => {
+          const base64 = (reader.result as string).split(",")[1];
+          onAddMedia({
+            ...plan.value,
+            path: plan.value.location.path,
+            contentBase64: base64,
+            caption: "",
+            alt: plan.value.alt ?? ""
+          });
+
+          // Insert into editor
+          if (editor) {
+            const objectUrl = URL.createObjectURL(webpBlob);
+            editor.chain().focus().insertContentAt(pos, {
+              type: "image",
+              attrs: { src: objectUrl, alt: plan.value.alt }
+            }).run();
+          }
+        };
+        reader.readAsDataURL(webpBlob);
+      } catch (err) {
+        console.error("Failed to process image", err);
+      }
+    }
+
+    window.addEventListener("ilm:upload-image", handleUpload);
+    return () => window.removeEventListener("ilm:upload-image", handleUpload);
+  }, [editor, onAddMedia]);
+
   return (
     <>
       <PageHeader
@@ -879,7 +1159,7 @@ function EditorPage({
                   onChange={(event) => onChange({ categories: event.target.value })}
                 />
               </Field>
-              <Field label="Description">
+              <Field label="Meta Description">
                 <input
                   value={draft.description}
                   onChange={(event) => onChange({ description: event.target.value })}
@@ -888,30 +1168,106 @@ function EditorPage({
             </div>
           </Panel>
           <Panel title="Markdown editor">
-            <textarea
-              aria-label="Post markdown"
-              className="min-h-[420px] w-full resize-y rounded-md border border-zinc-300 bg-white p-4 font-mono text-sm leading-6 outline-none focus:border-zinc-950 focus:ring-2 focus:ring-zinc-200"
-              value={draft.markdown}
-              onChange={(event) => onChange({ markdown: event.target.value })}
+            <EditorToolbar editor={editor} />
+            <EditorContent
+              editor={editor}
+              className="min-h-[420px] w-full rounded-md border border-zinc-300 bg-white p-4 text-sm leading-6 focus-within:border-zinc-950 focus-within:ring-2 focus-within:ring-zinc-200"
             />
             <div className="mt-4 flex flex-wrap gap-3">
               <Button type="button" onClick={onSaveDraft}>
                 Save Draft
               </Button>
-              <Button type="button" variant="secondary" onClick={onPublish}>
-                Publish
-              </Button>
-              <Button type="button" variant="ghost" onClick={onSuggest}>
-                <Sparkles className="h-4 w-4" />
-                AI Suggest
+              <Button 
+                type="button" 
+                variant="secondary" 
+                onClick={onPublish}
+                disabled={publishProgress === "creating-commit" || publishProgress === "deploying" || publishProgress === "building"}
+                title={seoScore < 50 ? "Warning: Low SEO score" : "Ready to publish"}
+              >
+                {publishProgress === "creating-commit" ? "Committing..." :
+                 publishProgress === "building" || publishProgress === "deploying" ? "Deploying..." :
+                 publishProgress === "published" ? "Published!" :
+                 `Publish ${seoScore < 50 ? "(Low SEO)" : ""}`}
               </Button>
             </div>
           </Panel>
         </div>
         <aside className="space-y-4">
-          <Panel title="SEO">
-            <p className="text-3xl font-semibold">{seoScore}/100</p>
-            <p className="mt-2 break-words text-sm text-zinc-600">{seoUrl}</p>
+          <Panel title="AI Assistant">
+            <div className="grid grid-cols-2 gap-2">
+              <Button type="button" variant="ghost" onClick={() => onSuggest("improve-writing")} className="h-auto py-2 text-xs">
+                <Sparkles className="mr-1 h-3 w-3" /> Improve
+              </Button>
+              <Button type="button" variant="ghost" onClick={() => onSuggest("fix-grammar")} className="h-auto py-2 text-xs">
+                <Sparkles className="mr-1 h-3 w-3" /> Grammar
+              </Button>
+              <Button type="button" variant="ghost" onClick={() => onSuggest("rewrite")} className="h-auto py-2 text-xs">
+                <Sparkles className="mr-1 h-3 w-3" /> Rewrite
+              </Button>
+              <Button type="button" variant="ghost" onClick={() => onSuggest("summarize")} className="h-auto py-2 text-xs">
+                <Sparkles className="mr-1 h-3 w-3" /> Summarize
+              </Button>
+              <Button type="button" variant="ghost" onClick={() => onSuggest("tags")} className="h-auto py-2 text-xs">
+                <Sparkles className="mr-1 h-3 w-3" /> Tags
+              </Button>
+              <Button type="button" variant="ghost" onClick={() => onSuggest("categories")} className="h-auto py-2 text-xs">
+                <Sparkles className="mr-1 h-3 w-3" /> Categories
+              </Button>
+              <Button type="button" variant="ghost" onClick={() => onSuggest("social-post")} className="col-span-2 h-auto py-2 text-xs">
+                <Sparkles className="mr-1 h-3 w-3" /> Social Post
+              </Button>
+            </div>
+            
+            {aiSuggestion && (
+              <div className="mt-4 rounded-md border border-zinc-200 bg-blue-50 p-3">
+                <p className="mb-2 text-xs font-semibold text-blue-900">
+                  Suggestion ({aiSuggestion.kind})
+                </p>
+                <div className="max-h-40 overflow-y-auto whitespace-pre-wrap text-xs text-blue-800">
+                  {aiSuggestion.content}
+                </div>
+                <div className="mt-3 text-right">
+                  <Button type="button" onClick={onApproveSuggestion} className="h-7 text-xs">
+                    Approve
+                  </Button>
+                </div>
+              </div>
+            )}
+          </Panel>
+          <Panel title="SEO & Social">
+            <div className="flex items-center gap-4">
+              <div>
+                <p className={`text-3xl font-semibold ${seoScore >= 80 ? 'text-green-600' : seoScore >= 50 ? 'text-yellow-600' : 'text-red-600'}`}>
+                  {seoScore}/100
+                </p>
+                <p className="text-xs text-zinc-500">SEO Score</p>
+              </div>
+              {seoScore < 50 && (
+                <p className="text-xs text-red-600">Consider improving your title length, description, or adding a cover image.</p>
+              )}
+            </div>
+            
+            <div className="mt-4 border-t border-zinc-200 pt-4">
+              <p className="mb-2 text-sm font-semibold">OpenGraph Preview</p>
+              <div className="rounded-md border border-zinc-200 bg-zinc-50 p-3 text-xs text-zinc-700">
+                <p className="truncate"><strong>Title:</strong> {seoMetadata.openGraph["og:title"]}</p>
+                <p className="truncate"><strong>Desc:</strong> {seoMetadata.openGraph["og:description"] || "None"}</p>
+                <p className="truncate"><strong>Image:</strong> {seoMetadata.openGraph["og:image"] || "None"}</p>
+              </div>
+            </div>
+
+            <div className="mt-4 border-t border-zinc-200 pt-4">
+              <p className="mb-2 text-sm font-semibold">Twitter Card</p>
+              <div className="rounded-md border border-zinc-200 bg-zinc-50 p-3 text-xs text-zinc-700">
+                <p className="truncate"><strong>Type:</strong> {seoMetadata.twitter["twitter:card"]}</p>
+                <p className="truncate"><strong>Title:</strong> {seoMetadata.twitter["twitter:title"]}</p>
+                <p className="truncate"><strong>Desc:</strong> {seoMetadata.twitter["twitter:description"] || "None"}</p>
+              </div>
+            </div>
+
+            <p className="mt-4 break-words text-xs text-zinc-500">
+              Canonical URL: {seoMetadata.canonicalUrl}
+            </p>
           </Panel>
           <Panel title="Document">
             <dl className="space-y-2 text-sm">
@@ -937,19 +1293,6 @@ function EditorPage({
               </ol>
             )}
           </Panel>
-          {aiSuggestion ? (
-            <Panel title="AI suggestion">
-              <p className="text-sm text-zinc-700">{aiSuggestion}</p>
-              <Button
-                className="mt-3"
-                type="button"
-                variant="secondary"
-                onClick={onApproveSuggestion}
-              >
-                Approve
-              </Button>
-            </Panel>
-          ) : null}
         </aside>
       </section>
     </>
@@ -1149,11 +1492,21 @@ function SettingsPage({
           <Metric label="Branch" value={repository?.branch ?? "main"} />
         </Panel>
         
-        <Panel title="Google Analytics">
-          <Metric label="Measurement ID" value={googleAnalyticsId || "Not configured"} />
-          <p className="mt-2 text-xs text-zinc-500">
-            This ID is loaded dynamically from config/seo.ts in your repository.
-          </p>
+        <Panel title="SEO & Analytics">
+          <div className="space-y-4">
+            <div>
+              <Metric label="Google Analytics ID" value={googleAnalyticsId || "Not configured"} />
+              <p className="mt-1 text-xs text-zinc-500">Loaded from config/seo.ts</p>
+            </div>
+            <div>
+              <Metric label="Search Console ID" value="Not configured" />
+              <p className="mt-1 text-xs text-zinc-500">Loaded from config/seo.ts</p>
+            </div>
+            <div>
+              <Metric label="Canonical Base URL" value="https://example.com" />
+              <p className="mt-1 text-xs text-zinc-500">Fallback for RSS and Sitemap</p>
+            </div>
+          </div>
         </Panel>
 
         <Panel title="Gemini AI (BYOK)">
@@ -1233,11 +1586,13 @@ function SettingsPage({
 function StatusCard({
   title,
   value,
-  icon
+  icon,
+  loading
 }: {
   readonly title: string;
   readonly value: string;
   readonly icon: React.ReactNode;
+  readonly loading?: boolean;
 }) {
   return (
     <article className="rounded-md border border-zinc-200 bg-white p-5">
@@ -1245,7 +1600,11 @@ function StatusCard({
         {icon}
       </div>
       <h2 className="text-sm font-medium text-zinc-600">{title}</h2>
-      <p className="mt-2 break-words text-base font-semibold">{value}</p>
+      {loading ? (
+        <div className="mt-2 h-6 w-24 animate-pulse rounded bg-zinc-200"></div>
+      ) : (
+        <p className="mt-2 break-words text-base font-semibold">{value}</p>
+      )}
     </article>
   );
 }

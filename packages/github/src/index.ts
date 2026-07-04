@@ -43,11 +43,10 @@ export class GitHubClient {
   }
 
   async listRepositories() {
-    const response = await this.octokit.repos.listForAuthenticatedUser({
-      affiliation: "owner,collaborator",
-      sort: "updated"
+    const response = await this.octokit.apps.listReposAccessibleToInstallation({
+      per_page: 100
     });
-    return response.data.map((repo) => ({
+    return response.data.repositories.map((repo) => ({
       id: repo.id,
       name: repo.name,
       fullName: repo.full_name,
