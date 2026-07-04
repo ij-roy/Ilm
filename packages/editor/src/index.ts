@@ -82,7 +82,7 @@ export const ImageUploadExtension = Extension.create({
             }
             return false;
           },
-          handlePaste(view, event, slice) {
+          handlePaste(view, event) {
             if (
               event.clipboardData &&
               event.clipboardData.files &&

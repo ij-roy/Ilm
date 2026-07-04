@@ -5,10 +5,6 @@ export interface Env {
   readonly ALLOWED_ORIGIN?: string;
 }
 
-type InstallationTokenRequestBody = {
-  readonly installation_id?: number;
-};
-
 function json(data: unknown, init: ResponseInit = {}, corsOrigin: string = "*"): Response {
   return new Response(JSON.stringify(data), {
     ...init,
@@ -98,7 +94,7 @@ async function signJwt(appId: string, privateKeyPem: string): Promise<string> {
 
   const cryptoKey = await crypto.subtle.importKey(
     "pkcs8",
-    pkcs8Der as any,
+    pkcs8Der as BufferSource,
     {
       name: "RSASSA-PKCS1-v1_5",
       hash: "SHA-256"
@@ -160,7 +156,7 @@ async function handleGitHubAppCallback(
     const appRes = await fetch("https://api.github.com/app", {
       headers: { Authorization: `Bearer ${jwt}`, "User-Agent": "ilm-github-auth" }
     });
-    const appData = (await appRes.json()) as any;
+    const appData = (await appRes.json()) as { client_id: string; html_url: string };
 
     const tokenRes = await fetch("https://github.com/login/oauth/access_token", {
       method: "POST",
@@ -171,7 +167,7 @@ async function handleGitHubAppCallback(
         code
       })
     });
-    const tokenData = (await tokenRes.json()) as any;
+    const tokenData = (await tokenRes.json()) as { access_token: string };
     const userToken = tokenData.access_token;
 
     if (!userToken) {
@@ -182,7 +178,7 @@ async function handleGitHubAppCallback(
     const instRes = await fetch("https://api.github.com/user/installations", {
       headers: { Authorization: `Bearer ${userToken}`, "User-Agent": "ilm-github-auth" }
     });
-    const instData = (await instRes.json()) as any;
+    const instData = (await instRes.json()) as { installations: Array<{ id: number }> };
 
     if (!instData.installations || instData.installations.length === 0) {
       return Response.redirect(`${appData.html_url}/installations/new`, 302);
@@ -200,12 +196,12 @@ async function handleGitHubAppCallback(
         }
       }
     );
-    const accessData = (await accessRes.json()) as any;
+    const accessData = (await accessRes.json()) as { token: string };
 
     redirectUrl.searchParams.set("installation_id", targetInstallationId.toString());
     redirectUrl.searchParams.set("access_token", accessData.token);
     return Response.redirect(redirectUrl.toString(), 302);
-  } catch (err: any) {
+  } catch {
     redirectUrl.searchParams.set("error", "callback_crash");
     return Response.redirect(redirectUrl.toString(), 302);
   }
@@ -240,7 +236,7 @@ async function handleGetAppMetadata(env: Env, corsOrigin: string): Promise<Respo
       );
     }
 
-    const appData = (await response.json()) as any;
+    const appData = (await response.json()) as { client_id: string; name: string; html_url: string };
     return json(
       {
         appId: env.GITHUB_APP_ID,
@@ -251,9 +247,9 @@ async function handleGetAppMetadata(env: Env, corsOrigin: string): Promise<Respo
       { status: 200 },
       corsOrigin
     );
-  } catch (err: any) {
+  } catch (err: unknown) {
     return json(
-      { error: "Failed to fetch GitHub App metadata", details: err.message },
+      { error: "Failed to fetch GitHub App metadata", details: (err as Error).message },
       { status: 500 },
       corsOrigin
     );
@@ -291,7 +287,9 @@ export default {
       if (stateParam) {
         try {
           targetOrigin = getAllowedOrigin(env, decodeURIComponent(stateParam));
-        } catch {}
+        } catch {
+          // ignore parsing error
+        }
       }
       return handleGitHubAppCallback(url, env, targetOrigin);
     }

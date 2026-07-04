@@ -1,3 +1,4 @@
+/* global URL */
 import { defineConfig } from "astro/config";
 import sitemap from "@astrojs/sitemap";
 import { readFileSync } from "node:fs";
