@@ -137,9 +137,14 @@ async function handleGitHubAppCallback(
 ): Promise<Response> {
   const code = url.searchParams.get("code");
   const installationId = url.searchParams.get("installation_id");
+  const setupAction = url.searchParams.get("setup_action");
 
   const redirectUrl = new URL(targetOrigin);
   redirectUrl.pathname = "/dashboard";
+
+  if (setupAction) {
+    redirectUrl.searchParams.set("setup_action", setupAction);
+  }
 
   if (!code) {
     if (installationId) redirectUrl.searchParams.set("installation_id", installationId);

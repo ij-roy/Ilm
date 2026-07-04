@@ -12,6 +12,7 @@ describe("@ilm/cms", () => {
   });
 
   it("renders the production CMS shell", () => {
+    window.history.pushState({}, "Test", "/dashboard");
     render(<App />);
 
     expect(screen.getByRole("heading", { name: "Dashboard" })).toBeInTheDocument();

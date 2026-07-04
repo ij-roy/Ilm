@@ -1,5 +1,5 @@
 import * as React from "react";
-import { BrowserRouter, NavLink, Navigate, Route, Routes } from "react-router-dom";
+import { BrowserRouter, NavLink, Route, Routes, useLocation } from "react-router-dom";
 import {
   BarChart3,
   CheckCircle2,
@@ -53,6 +53,7 @@ import {
 } from "@ilm/repository";
 import { generateSeoMetadata, generateSlug, scoreSeo } from "@ilm/seo";
 import { Button } from "@ilm/ui";
+import { LandingPage } from "./landing";
 
 type ConnectedRepository = {
   readonly owner: string;
@@ -293,6 +294,7 @@ function CmsApplication() {
     const installationId = params.get("installation_id");
     const accessToken = params.get("access_token");
     const errorMsg = params.get("error");
+    const setupAction = params.get("setup_action");
 
     if (errorMsg) {
       setStatus(`GitHub connection failed: ${errorMsg}`);
@@ -305,6 +307,12 @@ function CmsApplication() {
       }));
       setStatus("GitHub connected successfully!");
       addEvent("auth", `Authenticated App Installation ${installationId}`);
+
+      if (setupAction === "update") {
+        // Automatically reload repositories if the user just updated their installation
+        setStatus("Refreshing repositories...");
+        setTimeout(() => loadRepositories(), 500);
+      }
 
       const cleanUrl = window.location.pathname + window.location.hash;
       window.history.replaceState({}, document.title, cleanUrl);
@@ -404,17 +412,29 @@ function CmsApplication() {
         repo: repository.name,
         branch: repository.defaultBranch,
         fullName: repository.fullName
-      },
-      availableRepositories: undefined // clear the list once connected
+      }
     }));
     setStatus(`Connected ${repository.fullName}`);
     addEvent("repository", `Connected ${repository.fullName}`);
   }
 
+  function disconnectRepository() {
+    setState((current) => ({ ...current, repository: undefined }));
+    setStatus("Disconnected repository");
+  }
+
   function handleConnectGitHub() {
     if (appMetadata) {
       const state = encodeURIComponent(window.location.origin);
-      window.location.href = `https://github.com/login/oauth/authorize?client_id=${appMetadata.clientId}&state=${state}`;
+      window.location.href = `${appMetadata.htmlUrl}/installations/new?state=${state}`;
+    }
+  }
+
+  function handleConfigureRepositories() {
+    if (state.installationId) {
+      window.open(`https://github.com/settings/installations/${state.installationId}`, "_blank");
+    } else if (appMetadata) {
+      window.open(appMetadata.htmlUrl, "_blank");
     }
   }
 
@@ -699,6 +719,11 @@ function CmsApplication() {
     }
   }, [state.accessToken, state.repository, state.availableRepositories]);
 
+  const location = useLocation();
+  if (location.pathname === "/") {
+    return <LandingPage onConnectGitHub={handleConnectGitHub} />;
+  }
+
   return (
     <div className="min-h-screen bg-zinc-50 text-zinc-950">
       <div className="grid min-h-screen grid-cols-1 lg:grid-cols-[270px_1fr]">
@@ -742,7 +767,6 @@ function CmsApplication() {
             {status}
           </div>
           <Routes>
-            <Route path="/" element={<Navigate to="/dashboard" replace />} />
             <Route
               path="/dashboard"
               element={
@@ -753,6 +777,8 @@ function CmsApplication() {
                   repositoryValid={repositoryValidation.ok}
                   onConnect={handleConnectGitHub}
                   onSelectRepository={selectRepository}
+                  onDisconnectRepository={disconnectRepository}
+                  onConfigureRepositories={handleConfigureRepositories}
                 />
               }
             />
@@ -834,6 +860,8 @@ function Dashboard({
   readonly repositoryValid: boolean;
   readonly onConnect: () => void;
   readonly onSelectRepository: (repoId: number) => void;
+  readonly onDisconnectRepository: () => void;
+  readonly onConfigureRepositories: () => void;
 }) {
   return (
     <>
@@ -891,6 +919,9 @@ function Dashboard({
               <p className="text-sm font-medium text-green-900">
                 Connected to {state.repository.fullName}
               </p>
+              <Button type="button" className="mt-3" onClick={onDisconnectRepository}>
+                Change Repository
+              </Button>
             </div>
           ) : state.accessToken && state.availableRepositories ? (
             <div className="mt-4">
@@ -915,6 +946,16 @@ function Dashboard({
                     </option>
                   ))}
                 </select>
+              </div>
+              <div className="mt-4 text-sm text-zinc-500">
+                Don't see your repository?{" "}
+                <button
+                  type="button"
+                  onClick={onConfigureRepositories}
+                  className="text-blue-600 hover:underline font-medium"
+                >
+                  Configure GitHub App permissions
+                </button>
               </div>
             </div>
           ) : (
