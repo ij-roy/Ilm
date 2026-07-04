@@ -39,7 +39,7 @@ async function readPost(fileName: string, isDraft: boolean = false): Promise<Tem
 export async function getSearchableContent(isDev: boolean): Promise<TemplatePost[]> {
   const posts = await getPublishedPosts();
   let drafts: TemplatePost[] = [];
-  
+
   if (isDev) {
     try {
       const files = (await readdir(draftRoot)).filter((file) => file.endsWith(".md"));

@@ -63,14 +63,19 @@ export const ImageUploadExtension = Extension.create({
         key: new PluginKey("imageUpload"),
         props: {
           handleDrop(view, event, slice, moved) {
-            if (!moved && event.dataTransfer && event.dataTransfer.files && event.dataTransfer.files.length > 0) {
+            if (
+              !moved &&
+              event.dataTransfer &&
+              event.dataTransfer.files &&
+              event.dataTransfer.files.length > 0
+            ) {
               const file = event.dataTransfer.files[0];
               if (!file.type.startsWith("image/")) return false;
-              
+
               event.preventDefault();
               const coords = view.posAtCoords({ left: event.clientX, top: event.clientY });
-              const customEvent = new CustomEvent("ilm:upload-image", { 
-                detail: { file, pos: coords?.pos ?? view.state.selection.from } 
+              const customEvent = new CustomEvent("ilm:upload-image", {
+                detail: { file, pos: coords?.pos ?? view.state.selection.from }
               });
               window.dispatchEvent(customEvent);
               return true;
@@ -78,13 +83,17 @@ export const ImageUploadExtension = Extension.create({
             return false;
           },
           handlePaste(view, event, slice) {
-            if (event.clipboardData && event.clipboardData.files && event.clipboardData.files.length > 0) {
+            if (
+              event.clipboardData &&
+              event.clipboardData.files &&
+              event.clipboardData.files.length > 0
+            ) {
               const file = event.clipboardData.files[0];
               if (!file.type.startsWith("image/")) return false;
 
               event.preventDefault();
-              const customEvent = new CustomEvent("ilm:upload-image", { 
-                detail: { file, pos: view.state.selection.from } 
+              const customEvent = new CustomEvent("ilm:upload-image", {
+                detail: { file, pos: view.state.selection.from }
               });
               window.dispatchEvent(customEvent);
               return true;

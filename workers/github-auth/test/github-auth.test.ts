@@ -39,10 +39,13 @@ describe("@ilm/github-auth worker", () => {
   });
 
   it("handles OPTIONS request with CORS headers", async () => {
-    const response = await worker.fetch(new Request("https://auth.ilm.dev/health", { method: "OPTIONS" }), {
-      GITHUB_APP_ID: "12345",
-      ALLOWED_ORIGIN: "http://localhost:5173"
-    });
+    const response = await worker.fetch(
+      new Request("https://auth.ilm.dev/health", { method: "OPTIONS" }),
+      {
+        GITHUB_APP_ID: "12345",
+        ALLOWED_ORIGIN: "http://localhost:5173"
+      }
+    );
 
     expect(response.status).toBe(200);
     expect(response.headers.get("Access-Control-Allow-Origin")).toBe("http://localhost:5173");
@@ -123,8 +126,10 @@ describe("@ilm/github-auth worker", () => {
     );
 
     expect(response.status).toBe(302);
-    expect(response.headers.get("Location")).toBe("http://localhost:5173/dashboard?installation_id=9876&access_token=inst_token");
-    
+    expect(response.headers.get("Location")).toBe(
+      "http://localhost:5173/dashboard?installation_id=9876&access_token=inst_token"
+    );
+
     vi.unstubAllGlobals();
   });
 });

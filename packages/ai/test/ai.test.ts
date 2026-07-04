@@ -48,7 +48,9 @@ describe("@ilm/ai", () => {
     expect(suggestion.requiresApproval).toBe(true);
 
     expect(mockFetch).toHaveBeenCalledWith(
-      expect.stringContaining("generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=dummy-api-key"),
+      expect.stringContaining(
+        "generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=dummy-api-key"
+      ),
       expect.any(Object)
     );
 
@@ -57,10 +59,7 @@ describe("@ilm/ai", () => {
 
   it("throws error when API key is missing", async () => {
     await expect(
-      generateGeminiSuggestion(
-        { kind: "summarize", selectedText: "", contextMarkdown: "" },
-        ""
-      )
+      generateGeminiSuggestion({ kind: "summarize", selectedText: "", contextMarkdown: "" }, "")
     ).rejects.toThrow("Gemini API key is required");
   });
 });

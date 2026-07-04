@@ -19,5 +19,4 @@ describe("@ilm/cms", () => {
     expect(screen.getByRole("navigation", { name: "Primary" })).toBeInTheDocument();
     expect(screen.getByText("Git-native publishing")).toBeInTheDocument();
   });
-
 });

@@ -1,12 +1,12 @@
-import type { APIRoute } from 'astro';
-import { getSearchableContent } from '../template/posts';
+import type { APIRoute } from "astro";
+import { getSearchableContent } from "../template/posts";
 
 export const GET: APIRoute = async () => {
   const isDev = import.meta.env.DEV;
   const posts = await getSearchableContent(isDev);
-  
+
   // We strip down the index to just what we need to search
-  const index = posts.map(post => ({
+  const index = posts.map((post) => ({
     title: post.title,
     slug: post.slug,
     description: post.description,
@@ -15,13 +15,10 @@ export const GET: APIRoute = async () => {
     isDraft: post.isDraft
   }));
 
-  return new Response(
-    JSON.stringify(index),
-    {
-      status: 200,
-      headers: {
-        'Content-Type': 'application/json'
-      }
+  return new Response(JSON.stringify(index), {
+    status: 200,
+    headers: {
+      "Content-Type": "application/json"
     }
-  );
+  });
 };

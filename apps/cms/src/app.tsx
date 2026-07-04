@@ -23,13 +23,33 @@ import {
   List,
   ListOrdered
 } from "lucide-react";
-import { createSuggestion, generateGeminiSuggestion, AiSuggestion, AiSuggestionKind } from "@ilm/ai";
+import {
+  createSuggestion,
+  generateGeminiSuggestion,
+  AiSuggestion,
+  AiSuggestionKind
+} from "@ilm/ai";
 import { createGoogleOAuthUrl } from "@ilm/analytics";
-import { estimateReadingTimeMinutes, extractOutline, isLocalDraftNewer, defaultEditorExtensions } from "@ilm/editor";
+import {
+  estimateReadingTimeMinutes,
+  extractOutline,
+  isLocalDraftNewer,
+  defaultEditorExtensions
+} from "@ilm/editor";
 import { useEditor, EditorContent } from "@tiptap/react";
-import { GitHubClient, LocalGitHubClient, manifestToCommitRequest, GitHubRepositorySummary } from "@ilm/github";
+import {
+  GitHubClient,
+  LocalGitHubClient,
+  manifestToCommitRequest,
+  GitHubRepositorySummary
+} from "@ilm/github";
 import { planMediaAsset, convertImageToWebP } from "@ilm/media";
-import { createDraftSavePlan, createPublishPlan, validatePublishPlan, PublishProgressStage } from "@ilm/publishing";
+import {
+  createDraftSavePlan,
+  createPublishPlan,
+  validatePublishPlan,
+  PublishProgressStage
+} from "@ilm/publishing";
 import {
   DraftFrontmatter,
   RepositoryEntry,
@@ -168,11 +188,7 @@ async function decryptData(ciphertextBase64: string, passphrase: string): Promis
   const encrypted = bytes.slice(28);
 
   const key = await deriveKey(passphrase, salt);
-  const decrypted = await window.crypto.subtle.decrypt(
-    { name: "AES-GCM", iv },
-    key,
-    encrypted
-  );
+  const decrypted = await window.crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, encrypted);
 
   return new TextDecoder().decode(decrypted);
 }
@@ -397,7 +413,7 @@ function CmsApplication() {
   }
 
   function selectRepository(repoId: number) {
-    const repository = state.availableRepositories?.find(r => r.id === repoId);
+    const repository = state.availableRepositories?.find((r) => r.id === repoId);
     if (!repository) return;
 
     setState((current) => ({
@@ -416,7 +432,8 @@ function CmsApplication() {
 
   function handleConnectGitHub() {
     if (appMetadata) {
-      window.location.href = `https://github.com/login/oauth/authorize?client_id=${appMetadata.clientId}`;
+      const state = encodeURIComponent(window.location.origin);
+      window.location.href = `https://github.com/login/oauth/authorize?client_id=${appMetadata.clientId}&state=${state}`;
     }
   }
 
@@ -518,7 +535,7 @@ function CmsApplication() {
       }
 
       setStatus(`Generating AI suggestion (${kind})...`);
-      
+
       // Determine what text to analyze based on the kind
       let selectedText = state.activeDraft.description;
       if (kind === "fix-grammar" || kind === "rewrite") {
@@ -545,10 +562,10 @@ function CmsApplication() {
 
   function approveAiSuggestion() {
     if (!state.aiSuggestion) return;
-    
+
     let patch: Partial<DraftRecord> = {};
     const { kind, content } = state.aiSuggestion;
-    
+
     switch (kind) {
       case "improve-writing":
       case "summarize":
@@ -566,7 +583,7 @@ function CmsApplication() {
         patch = { markdown: content };
         break;
     }
-    
+
     updateDraft(patch);
     setState((current) => ({ ...current, aiSuggestion: undefined }));
     addEvent("ai", `AI suggestion approved: ${kind}`);
@@ -634,7 +651,7 @@ function CmsApplication() {
       return;
     }
 
-    setState(c => ({ ...c, publishProgress: "creating-commit" }));
+    setState((c) => ({ ...c, publishProgress: "creating-commit" }));
     setStatus("Committing post to GitHub...");
 
     let result;
@@ -643,7 +660,7 @@ function CmsApplication() {
         manifestToCommitRequest(state.repository, plan.value.commit)
       );
     } catch (err: any) {
-      setState(c => ({ ...c, publishProgress: "failed" }));
+      setState((c) => ({ ...c, publishProgress: "failed" }));
       setStatus(`Commit failed: ${err.message}`);
       return;
     }
@@ -659,26 +676,26 @@ function CmsApplication() {
     addEvent("publish", `Committed ${plan.value.postPath}`);
 
     for (let attempts = 0; attempts < 30; attempts++) {
-      await new Promise(res => setTimeout(res, 2000));
-      
+      await new Promise((res) => setTimeout(res, 2000));
+
       try {
         const status = await activeGithubClient.getWorkflowStatus(state.repository);
         if (status === "completed") {
-          setState(c => ({ ...c, publishProgress: "published" }));
+          setState((c) => ({ ...c, publishProgress: "published" }));
           setStatus("Published successfully!");
           addEvent("publish", "GitHub Pages deployment completed");
           break;
         } else if (status === "failed") {
-          setState(c => ({ ...c, publishProgress: "failed" }));
+          setState((c) => ({ ...c, publishProgress: "failed" }));
           setStatus("GitHub Actions build failed. Check repository logs.");
           addEvent("publish", "Build failed");
           break;
         } else if (status === "in_progress") {
-          setState(c => ({ ...c, publishProgress: "deploying" }));
+          setState((c) => ({ ...c, publishProgress: "deploying" }));
           setStatus("Deploying via GitHub Actions...");
         }
       } catch (err) {
-        setState(c => ({ ...c, publishProgress: "failed" }));
+        setState((c) => ({ ...c, publishProgress: "failed" }));
         setStatus("Failed to read workflow status.");
         break;
       }
@@ -856,17 +873,13 @@ function Dashboard({
           icon={<CheckCircle2 />}
           loading={!state.repository && status.includes("Connecting")}
         />
-        <StatusCard 
-          title="SEO score" 
-          value={`${seoScore}/100`} 
-          icon={<Search />} 
+        <StatusCard
+          title="SEO score"
+          value={`${seoScore}/100`}
+          icon={<Search />}
           loading={!state.repository && status.includes("Connecting")}
         />
-        <StatusCard 
-          title="Last status" 
-          value={status} 
-          icon={<UploadCloud />} 
-        />
+        <StatusCard title="Last status" value={status} icon={<UploadCloud />} />
       </section>
       <section className="grid gap-4 px-6 pb-6 lg:grid-cols-[1fr_360px]">
         <div className="rounded-md border border-zinc-200 bg-white p-5">
@@ -904,7 +917,7 @@ function Dashboard({
                 Select your repository:
               </label>
               <div className="flex gap-2">
-                <select 
+                <select
                   className="flex-1 rounded-md border border-zinc-300 p-2 text-sm"
                   onChange={(e) => {
                     const repoId = Number(e.target.value);
@@ -912,8 +925,10 @@ function Dashboard({
                   }}
                   defaultValue=""
                 >
-                  <option value="" disabled>Choose a repository...</option>
-                  {state.availableRepositories.map(repo => (
+                  <option value="" disabled>
+                    Choose a repository...
+                  </option>
+                  {state.availableRepositories.map((repo) => (
                     <option key={repo.id} value={repo.id}>
                       {repo.fullName}
                     </option>
@@ -1037,7 +1052,11 @@ function EditorPage({
   readonly draft: DraftRecord;
   readonly seoScore: number;
   readonly seoMetadata: ReturnType<typeof generateSeoMetadata>;
-  readonly outline: readonly { readonly level: number; readonly title: string; readonly anchor: string }[];
+  readonly outline: readonly {
+    readonly level: number;
+    readonly title: string;
+    readonly anchor: string;
+  }[];
   readonly readingTime: number;
   readonly aiSuggestion?: AiSuggestion;
   readonly publishProgress?: PublishProgressStage;
@@ -1068,11 +1087,11 @@ function EditorPage({
     async function handleUpload(e: Event) {
       const customEvent = e as CustomEvent<{ file: File; pos: number }>;
       const { file, pos } = customEvent.detail;
-      
+
       try {
         const webpBlob = await convertImageToWebP(file);
         const fileName = `${Date.now()}-${file.name.replace(/\.[^/.]+$/, "")}.webp`;
-        
+
         const plan = planMediaAsset({
           kind: "image",
           fileName,
@@ -1098,10 +1117,14 @@ function EditorPage({
           // Insert into editor
           if (editor) {
             const objectUrl = URL.createObjectURL(webpBlob);
-            editor.chain().focus().insertContentAt(pos, {
-              type: "image",
-              attrs: { src: objectUrl, alt: plan.value.alt }
-            }).run();
+            editor
+              .chain()
+              .focus()
+              .insertContentAt(pos, {
+                type: "image",
+                attrs: { src: objectUrl, alt: plan.value.alt }
+              })
+              .run();
           }
         };
         reader.readAsDataURL(webpBlob);
@@ -1177,17 +1200,24 @@ function EditorPage({
               <Button type="button" onClick={onSaveDraft}>
                 Save Draft
               </Button>
-              <Button 
-                type="button" 
-                variant="secondary" 
+              <Button
+                type="button"
+                variant="secondary"
                 onClick={onPublish}
-                disabled={publishProgress === "creating-commit" || publishProgress === "deploying" || publishProgress === "building"}
+                disabled={
+                  publishProgress === "creating-commit" ||
+                  publishProgress === "deploying" ||
+                  publishProgress === "building"
+                }
                 title={seoScore < 50 ? "Warning: Low SEO score" : "Ready to publish"}
               >
-                {publishProgress === "creating-commit" ? "Committing..." :
-                 publishProgress === "building" || publishProgress === "deploying" ? "Deploying..." :
-                 publishProgress === "published" ? "Published!" :
-                 `Publish ${seoScore < 50 ? "(Low SEO)" : ""}`}
+                {publishProgress === "creating-commit"
+                  ? "Committing..."
+                  : publishProgress === "building" || publishProgress === "deploying"
+                    ? "Deploying..."
+                    : publishProgress === "published"
+                      ? "Published!"
+                      : `Publish ${seoScore < 50 ? "(Low SEO)" : ""}`}
               </Button>
             </div>
           </Panel>
@@ -1195,29 +1225,64 @@ function EditorPage({
         <aside className="space-y-4">
           <Panel title="AI Assistant">
             <div className="grid grid-cols-2 gap-2">
-              <Button type="button" variant="ghost" onClick={() => onSuggest("improve-writing")} className="h-auto py-2 text-xs">
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => onSuggest("improve-writing")}
+                className="h-auto py-2 text-xs"
+              >
                 <Sparkles className="mr-1 h-3 w-3" /> Improve
               </Button>
-              <Button type="button" variant="ghost" onClick={() => onSuggest("fix-grammar")} className="h-auto py-2 text-xs">
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => onSuggest("fix-grammar")}
+                className="h-auto py-2 text-xs"
+              >
                 <Sparkles className="mr-1 h-3 w-3" /> Grammar
               </Button>
-              <Button type="button" variant="ghost" onClick={() => onSuggest("rewrite")} className="h-auto py-2 text-xs">
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => onSuggest("rewrite")}
+                className="h-auto py-2 text-xs"
+              >
                 <Sparkles className="mr-1 h-3 w-3" /> Rewrite
               </Button>
-              <Button type="button" variant="ghost" onClick={() => onSuggest("summarize")} className="h-auto py-2 text-xs">
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => onSuggest("summarize")}
+                className="h-auto py-2 text-xs"
+              >
                 <Sparkles className="mr-1 h-3 w-3" /> Summarize
               </Button>
-              <Button type="button" variant="ghost" onClick={() => onSuggest("tags")} className="h-auto py-2 text-xs">
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => onSuggest("tags")}
+                className="h-auto py-2 text-xs"
+              >
                 <Sparkles className="mr-1 h-3 w-3" /> Tags
               </Button>
-              <Button type="button" variant="ghost" onClick={() => onSuggest("categories")} className="h-auto py-2 text-xs">
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => onSuggest("categories")}
+                className="h-auto py-2 text-xs"
+              >
                 <Sparkles className="mr-1 h-3 w-3" /> Categories
               </Button>
-              <Button type="button" variant="ghost" onClick={() => onSuggest("social-post")} className="col-span-2 h-auto py-2 text-xs">
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => onSuggest("social-post")}
+                className="col-span-2 h-auto py-2 text-xs"
+              >
                 <Sparkles className="mr-1 h-3 w-3" /> Social Post
               </Button>
             </div>
-            
+
             {aiSuggestion && (
               <div className="mt-4 rounded-md border border-zinc-200 bg-blue-50 p-3">
                 <p className="mb-2 text-xs font-semibold text-blue-900">
@@ -1237,31 +1302,47 @@ function EditorPage({
           <Panel title="SEO & Social">
             <div className="flex items-center gap-4">
               <div>
-                <p className={`text-3xl font-semibold ${seoScore >= 80 ? 'text-green-600' : seoScore >= 50 ? 'text-yellow-600' : 'text-red-600'}`}>
+                <p
+                  className={`text-3xl font-semibold ${seoScore >= 80 ? "text-green-600" : seoScore >= 50 ? "text-yellow-600" : "text-red-600"}`}
+                >
                   {seoScore}/100
                 </p>
                 <p className="text-xs text-zinc-500">SEO Score</p>
               </div>
               {seoScore < 50 && (
-                <p className="text-xs text-red-600">Consider improving your title length, description, or adding a cover image.</p>
+                <p className="text-xs text-red-600">
+                  Consider improving your title length, description, or adding a cover image.
+                </p>
               )}
             </div>
-            
+
             <div className="mt-4 border-t border-zinc-200 pt-4">
               <p className="mb-2 text-sm font-semibold">OpenGraph Preview</p>
               <div className="rounded-md border border-zinc-200 bg-zinc-50 p-3 text-xs text-zinc-700">
-                <p className="truncate"><strong>Title:</strong> {seoMetadata.openGraph["og:title"]}</p>
-                <p className="truncate"><strong>Desc:</strong> {seoMetadata.openGraph["og:description"] || "None"}</p>
-                <p className="truncate"><strong>Image:</strong> {seoMetadata.openGraph["og:image"] || "None"}</p>
+                <p className="truncate">
+                  <strong>Title:</strong> {seoMetadata.openGraph["og:title"]}
+                </p>
+                <p className="truncate">
+                  <strong>Desc:</strong> {seoMetadata.openGraph["og:description"] || "None"}
+                </p>
+                <p className="truncate">
+                  <strong>Image:</strong> {seoMetadata.openGraph["og:image"] || "None"}
+                </p>
               </div>
             </div>
 
             <div className="mt-4 border-t border-zinc-200 pt-4">
               <p className="mb-2 text-sm font-semibold">Twitter Card</p>
               <div className="rounded-md border border-zinc-200 bg-zinc-50 p-3 text-xs text-zinc-700">
-                <p className="truncate"><strong>Type:</strong> {seoMetadata.twitter["twitter:card"]}</p>
-                <p className="truncate"><strong>Title:</strong> {seoMetadata.twitter["twitter:title"]}</p>
-                <p className="truncate"><strong>Desc:</strong> {seoMetadata.twitter["twitter:description"] || "None"}</p>
+                <p className="truncate">
+                  <strong>Type:</strong> {seoMetadata.twitter["twitter:card"]}
+                </p>
+                <p className="truncate">
+                  <strong>Title:</strong> {seoMetadata.twitter["twitter:title"]}
+                </p>
+                <p className="truncate">
+                  <strong>Desc:</strong> {seoMetadata.twitter["twitter:description"] || "None"}
+                </p>
               </div>
             </div>
 
@@ -1491,7 +1572,7 @@ function SettingsPage({
           <Metric label="Repository" value={repository?.fullName ?? "Not connected"} />
           <Metric label="Branch" value={repository?.branch ?? "main"} />
         </Panel>
-        
+
         <Panel title="SEO & Analytics">
           <div className="space-y-4">
             <div>
@@ -1548,7 +1629,9 @@ function SettingsPage({
 
             <div className="flex gap-2">
               <Button
-                onClick={() => onSaveGeminiKey(apiKeyInput, storeLocally ? passphraseInput : undefined)}
+                onClick={() =>
+                  onSaveGeminiKey(apiKeyInput, storeLocally ? passphraseInput : undefined)
+                }
                 disabled={!apiKeyInput}
               >
                 Save API Key
@@ -1562,9 +1645,13 @@ function SettingsPage({
 
             <div className="text-xs text-zinc-500">
               {geminiEncrypted ? (
-                <span className="text-green-600 font-medium">✓ Key is encrypted and stored locally</span>
+                <span className="text-green-600 font-medium">
+                  ✓ Key is encrypted and stored locally
+                </span>
               ) : geminiApiKey ? (
-                <span className="text-blue-600 font-medium">✓ Key is loaded for this session only</span>
+                <span className="text-blue-600 font-medium">
+                  ✓ Key is loaded for this session only
+                </span>
               ) : (
                 <span>No API key set. Connect a key to enable AI Suggest.</span>
               )}

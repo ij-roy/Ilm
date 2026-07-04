@@ -50,8 +50,12 @@ export function createSuggestion(request: AiSuggestionRequest, content: string):
 }
 
 function buildGeminiPrompt(request: AiSuggestionRequest): string {
-  const contextText = request.contextMarkdown ? `Context of the document:\n---\n${request.contextMarkdown}\n---\n` : "";
-  const selectedText = request.selectedText ? `Selected text to analyze/modify:\n---\n${request.selectedText}\n---\n` : "";
+  const contextText = request.contextMarkdown
+    ? `Context of the document:\n---\n${request.contextMarkdown}\n---\n`
+    : "";
+  const selectedText = request.selectedText
+    ? `Selected text to analyze/modify:\n---\n${request.selectedText}\n---\n`
+    : "";
 
   switch (request.kind) {
     case "improve-writing":
@@ -107,7 +111,8 @@ export async function generateGeminiSuggestion(
 
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
-    const message = (errorData as any)?.error?.message || `Gemini API returned status ${response.status}`;
+    const message =
+      (errorData as any)?.error?.message || `Gemini API returned status ${response.status}`;
     throw new Error(message);
   }
 

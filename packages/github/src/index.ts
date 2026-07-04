@@ -55,7 +55,11 @@ export class GitHubClient {
     }));
   }
 
-  async getRepositoryEntries(ref: { owner: string; repo: string; branch: string }): Promise<RepositoryEntry[]> {
+  async getRepositoryEntries(ref: {
+    owner: string;
+    repo: string;
+    branch: string;
+  }): Promise<RepositoryEntry[]> {
     const response = await this.octokit.git.getTree({
       owner: ref.owner,
       repo: ref.repo,
@@ -63,12 +67,15 @@ export class GitHubClient {
       recursive: "true"
     });
     return response.data.tree.map((item) => ({
-        path: item.path || "",
-        type: item.type === "tree" ? "directory" : "file"
-      }));
+      path: item.path || "",
+      type: item.type === "tree" ? "directory" : "file"
+    }));
   }
 
-  async getFileContent(ref: { owner: string; repo: string; branch: string }, path: string): Promise<string> {
+  async getFileContent(
+    ref: { owner: string; repo: string; branch: string },
+    path: string
+  ): Promise<string> {
     try {
       const response = await this.octokit.repos.getContent({
         owner: ref.owner,
@@ -224,7 +231,10 @@ export class LocalGitHubClient {
     ];
   }
 
-  async getFileContent(ref: { owner: string; repo: string; branch: string }, path: string): Promise<string> {
+  async getFileContent(
+    ref: { owner: string; repo: string; branch: string },
+    path: string
+  ): Promise<string> {
     const key = `${ref.owner}/${ref.repo}/${ref.branch}/${path}`;
     return this.files.get(key) || "";
   }
