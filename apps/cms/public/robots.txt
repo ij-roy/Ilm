@@ -1,0 +1,12 @@
+User-agent: *
+Allow: /
+Disallow: /dashboard
+Disallow: /editor
+Disallow: /posts
+Disallow: /drafts
+Disallow: /media
+Disallow: /search
+Disallow: /analytics
+Disallow: /settings
+
+Sitemap: https://ilm.dophera.tech/sitemap.xml

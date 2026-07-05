@@ -135,6 +135,125 @@ const navItems = [
   { label: "Settings", href: "/settings", icon: Settings }
 ];
 
+const PRIMARY_SITE_URL = "https://ilm.dophera.tech";
+const SOCIAL_IMAGE_URL = `${PRIMARY_SITE_URL}/og-image.svg`;
+
+type RouteSeo = {
+  readonly title: string;
+  readonly description: string;
+  readonly indexable: boolean;
+};
+
+const publicRouteSeo: Record<string, RouteSeo> = {
+  "/": {
+    title: "Ilm — Git-native CMS for Markdown publishing",
+    description:
+      "Own your publishing workflow with a Git-native CMS that writes portable Markdown directly to GitHub.",
+    indexable: true
+  },
+  "/docs": {
+    title: "Ilm Docs — Git-native CMS documentation",
+    description:
+      "Learn how Ilm connects GitHub, Markdown publishing, SEO metadata, and static site workflows.",
+    indexable: true
+  },
+  "/privacy": {
+    title: "Ilm Privacy Policy",
+    description:
+      "How Ilm handles repository data, browser storage, analytics, and AI provider connections.",
+    indexable: true
+  }
+};
+
+function normalizePathname(pathname: string): string {
+  if (pathname === "/") return "/";
+  return pathname.replace(/\/+$/, "");
+}
+
+function getSeoUrl(pathname: string): string {
+  const normalizedPath = normalizePathname(pathname);
+  const canonicalPath = normalizedPath === "/" ? "/" : `${normalizedPath}/`;
+  return new URL(canonicalPath, PRIMARY_SITE_URL).toString();
+}
+
+function upsertMeta(attribute: "name" | "property", key: string, content: string | null) {
+  const selector = `meta[${attribute}="${key}"]`;
+  let element = document.head.querySelector<HTMLMetaElement>(selector);
+
+  if (!content) {
+    element?.remove();
+    return;
+  }
+
+  if (!element) {
+    element = document.createElement("meta");
+    element.setAttribute(attribute, key);
+    document.head.appendChild(element);
+  }
+
+  element.setAttribute("content", content);
+}
+
+function upsertCanonical(href: string | null) {
+  const selector = 'link[rel="canonical"]';
+  let element = document.head.querySelector<HTMLLinkElement>(selector);
+
+  if (!href) {
+    element?.remove();
+    return;
+  }
+
+  if (!element) {
+    element = document.createElement("link");
+    element.setAttribute("rel", "canonical");
+    document.head.appendChild(element);
+  }
+
+  element.setAttribute("href", href);
+}
+
+function RouteSeo() {
+  const location = useLocation();
+
+  React.useEffect(() => {
+    const pathname = normalizePathname(location.pathname);
+    const routeSeo = publicRouteSeo[pathname] ?? {
+      title: "Ilm CMS — Private workspace",
+      description: "Authenticated workspace for editing and publishing content with Ilm.",
+      indexable: false
+    };
+
+    const robots = routeSeo.indexable
+      ? "index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1"
+      : "noindex,nofollow";
+    const canonicalUrl = routeSeo.indexable ? getSeoUrl(pathname) : null;
+
+    document.title = routeSeo.title;
+    upsertMeta("name", "description", routeSeo.description);
+    upsertMeta("name", "robots", robots);
+    upsertMeta("name", "googlebot", robots);
+    upsertMeta("name", "application-name", "Ilm");
+    upsertMeta("name", "theme-color", "#000000");
+    upsertMeta("property", "og:title", routeSeo.title);
+    upsertMeta("property", "og:description", routeSeo.description);
+    upsertMeta("property", "og:type", "website");
+    upsertMeta("property", "og:site_name", "Ilm");
+    upsertMeta("property", "og:url", canonicalUrl ?? PRIMARY_SITE_URL);
+    upsertMeta("property", "og:image", SOCIAL_IMAGE_URL);
+    upsertMeta("property", "og:image:alt", "Ilm — Git-native CMS for Markdown publishing");
+    upsertMeta("property", "og:image:width", "1200");
+    upsertMeta("property", "og:image:height", "630");
+    upsertMeta("name", "twitter:card", "summary_large_image");
+    upsertMeta("name", "twitter:title", routeSeo.title);
+    upsertMeta("name", "twitter:description", routeSeo.description);
+    upsertMeta("name", "twitter:image", SOCIAL_IMAGE_URL);
+    upsertMeta("name", "twitter:image:alt", "Ilm — Git-native CMS for Markdown publishing");
+    upsertCanonical(canonicalUrl);
+  }, [location.pathname]);
+
+  return null;
+}
+
 async function deriveKey(passphrase: string, salt: Uint8Array): Promise<CryptoKey> {
   const encoder = new TextEncoder();
   const baseKey = await window.crypto.subtle.importKey(
@@ -250,6 +369,7 @@ function readState(): CmsState {
 export function App() {
   return (
     <BrowserRouter>
+      <RouteSeo />
       <CmsApplication />
     </BrowserRouter>
   );

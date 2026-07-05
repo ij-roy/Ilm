@@ -25,6 +25,9 @@ export function generateSlug(title: string): string {
 export function generateSeoMetadata(input: SeoInput): SeoMetadata {
   const slug = input.slug ?? generateSlug(input.title);
   const canonicalUrl = `${input.canonicalBaseUrl.replace(/\/$/, "")}/${slug}/`;
+  const absoluteImageUrl = input.coverImage
+    ? new URL(input.coverImage, input.canonicalBaseUrl).toString()
+    : undefined;
 
   return {
     slug,
@@ -32,20 +35,29 @@ export function generateSeoMetadata(input: SeoInput): SeoMetadata {
     openGraph: {
       "og:title": input.title,
       "og:description": input.description,
+      "og:type": "article",
+      "og:site_name": "Ilm",
       "og:url": canonicalUrl,
-      ...(input.coverImage ? { "og:image": input.coverImage } : {})
+      ...(absoluteImageUrl
+        ? {
+            "og:image": absoluteImageUrl,
+            "og:image:alt": input.title
+          }
+        : {})
     },
     twitter: {
-      "twitter:card": input.coverImage ? "summary_large_image" : "summary",
+      "twitter:card": absoluteImageUrl ? "summary_large_image" : "summary",
       "twitter:title": input.title,
-      "twitter:description": input.description
+      "twitter:description": input.description,
+      ...(absoluteImageUrl ? { "twitter:image": absoluteImageUrl } : {})
     },
     jsonLd: {
       "@context": "https://schema.org",
       "@type": "BlogPosting",
       headline: input.title,
       description: input.description,
-      url: canonicalUrl
+      url: canonicalUrl,
+      ...(absoluteImageUrl ? { image: [absoluteImageUrl] } : {})
     }
   };
 }

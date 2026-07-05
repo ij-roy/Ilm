@@ -1,4 +1,28 @@
 {
+  "redirects": [
+    {
+      "source": "/:path*",
+      "destination": "https://ilm.dophera.tech/:path*",
+      "permanent": true,
+      "has": [
+        {
+          "type": "host",
+          "value": "ilm-cms.vercel.app"
+        }
+      ]
+    },
+    {
+      "source": "/:path*",
+      "destination": "https://ilm.dophera.tech/:path*",
+      "permanent": true,
+      "has": [
+        {
+          "type": "host",
+          "value": "ilm-cms.dophera.tech"
+        }
+      ]
+    }
+  ],
   "rewrites": [
     {
       "source": "/(.*)",

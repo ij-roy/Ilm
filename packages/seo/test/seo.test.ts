@@ -8,11 +8,15 @@ describe("@ilm/seo", () => {
     const metadata = generateSeoMetadata({
       title: "A practical guide to shipping Ilm",
       description: "A detailed technical article about shipping Ilm with strong SEO foundations.",
-      canonicalBaseUrl: "https://example.com"
+      canonicalBaseUrl: "https://example.com",
+      coverImage: "/media/covers/ilm.webp"
     });
 
     expect(metadata.slug).toBe("a-practical-guide-to-shipping-ilm");
     expect(metadata.canonicalUrl).toContain("https://example.com/");
+    expect(metadata.openGraph["og:site_name"]).toBe("Ilm");
+    expect(metadata.openGraph["og:image"]).toBe("https://example.com/media/covers/ilm.webp");
+    expect(metadata.twitter["twitter:image"]).toBe("https://example.com/media/covers/ilm.webp");
   });
 
   it("scores complete SEO inputs higher than incomplete inputs", () => {

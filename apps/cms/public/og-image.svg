@@ -1,0 +1,54 @@
+<svg width="1200" height="630" viewBox="0 0 1200 630" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">Ilm</title>
+  <desc id="desc">Git-native CMS for Markdown publishing</desc>
+  <defs>
+    <linearGradient id="bg" x1="120" y1="72" x2="1080" y2="558" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#020617" />
+      <stop offset="1" stop-color="#0F172A" />
+    </linearGradient>
+    <radialGradient id="glowA" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(280 170) rotate(40) scale(260 220)">
+      <stop stop-color="#22D3EE" stop-opacity="0.95" />
+      <stop offset="1" stop-color="#22D3EE" stop-opacity="0" />
+    </radialGradient>
+    <radialGradient id="glowB" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(920 470) rotate(-40) scale(300 240)">
+      <stop stop-color="#A855F7" stop-opacity="0.9" />
+      <stop offset="1" stop-color="#A855F7" stop-opacity="0" />
+    </radialGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#67E8F9" />
+      <stop offset="1" stop-color="#A855F7" />
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="630" rx="48" fill="url(#bg)" />
+  <circle cx="280" cy="170" r="240" fill="url(#glowA)" />
+  <circle cx="920" cy="470" r="260" fill="url(#glowB)" />
+  <g opacity="0.18" stroke="#E2E8F0" stroke-width="1">
+    <path d="M120 108H1080" />
+    <path d="M120 194H1080" />
+    <path d="M120 280H1080" />
+    <path d="M120 366H1080" />
+    <path d="M120 452H1080" />
+    <path d="M120 538H1080" />
+  </g>
+  <g opacity="0.16" stroke="#94A3B8" stroke-width="1">
+    <path d="M164 92V538" />
+    <path d="M320 92V538" />
+    <path d="M476 92V538" />
+    <path d="M632 92V538" />
+    <path d="M788 92V538" />
+    <path d="M944 92V538" />
+    <path d="M1100 92V538" />
+  </g>
+  <g transform="translate(120 126)">
+    <rect x="0" y="0" width="112" height="112" rx="28" fill="rgba(255,255,255,0.06)" stroke="rgba(255,255,255,0.18)" />
+    <path d="M34 74V38C34 29.1634 41.1634 22 50 22H76C84.8366 22 92 29.1634 92 38V74" stroke="url(#accent)" stroke-width="10" stroke-linecap="round" stroke-linejoin="round" />
+    <path d="M34 74H92" stroke="url(#accent)" stroke-width="10" stroke-linecap="round" />
+  </g>
+  <text x="276" y="232" fill="white" font-family="Inter, Arial, sans-serif" font-size="88" font-weight="700" letter-spacing="-3">Ilm</text>
+  <text x="276" y="292" fill="#E2E8F0" font-family="Inter, Arial, sans-serif" font-size="28" font-weight="500">Git-native CMS for Markdown publishing</text>
+  <text x="276" y="362" fill="#94A3B8" font-family="Inter, Arial, sans-serif" font-size="24" font-weight="400">Own your publishing workflow. Write in Git, ship with confidence.</text>
+  <g transform="translate(276 410)">
+    <rect x="0" y="0" width="208" height="48" rx="24" fill="rgba(255,255,255,0.08)" stroke="rgba(255,255,255,0.16)" />
+    <text x="26" y="31" fill="#E2E8F0" font-family="Inter, Arial, sans-serif" font-size="20" font-weight="600">Search-ready metadata</text>
+  </g>
+</svg>
