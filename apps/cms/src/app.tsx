@@ -117,9 +117,11 @@ type CmsState = {
   readonly userToken?: string;
   readonly accessToken?: string;
   readonly installationId?: string;
-  readonly geminiApiKey?: string;
-  readonly geminiEncryptedKey?: string;
-  readonly googleAnalyticsId?: string;
+  readonly geminiApiKey: string;
+  readonly geminiEncryptedKey: string;
+  readonly googleAnalyticsId: string;
+  readonly siteUrl: string;
+  readonly isInitializingTemplate?: boolean;
 };
 
 const navItems = [
@@ -217,7 +219,8 @@ function createInitialState(): CmsState {
     events: [],
     geminiApiKey: "",
     geminiEncryptedKey: "",
-    googleAnalyticsId: ""
+    googleAnalyticsId: "",
+    siteUrl: ""
   };
 }
 
@@ -236,7 +239,8 @@ function readState(): CmsState {
       drafts: parsed.drafts ?? [],
       posts: parsed.posts ?? [],
       media: parsed.media ?? [],
-      events: parsed.events ?? []
+      events: parsed.events ?? [],
+      siteUrl: parsed.siteUrl ?? ""
     };
   } catch {
     return createInitialState();
@@ -390,7 +394,7 @@ function CmsApplication() {
   const seoInput = {
     title: state.activeDraft.title,
     description: state.activeDraft.description,
-    canonicalBaseUrl: "https://example.com",
+    canonicalBaseUrl: state.siteUrl || "https://example.com",
     slug: state.activeDraft.slug,
     coverImage: state.media.find((item) => item.kind === "cover")?.path
   };
@@ -403,6 +407,34 @@ function CmsApplication() {
     }
     return validateRepositoryStructure(repoEntries);
   }, [state.repository, repoEntries]);
+
+  const hasFrontend = React.useMemo(() => {
+    return repoEntries.some(
+      (e) =>
+        e.path === "package.json" ||
+        e.path === "astro.config.mjs" ||
+        e.path === "index.html" ||
+        e.path === "next.config.js"
+    );
+  }, [repoEntries]);
+
+  async function initializeTemplate() {
+    if (!state.repository) return;
+    setState((c) => ({ ...c, isInitializingTemplate: true }));
+    setStatus("Fetching template from Ilm... Committing to your repository...");
+    try {
+      const result = await activeGithubClient.initializeAstroTemplate(state.repository);
+      setStatus(`Template initialized successfully at ${result.sha}`);
+      addEvent("repository", "Initialized Astro template");
+      
+      const entries = await activeGithubClient.getRepositoryEntries(state.repository);
+      setRepoEntries(entries);
+    } catch (err: unknown) {
+      setStatus(`Failed to initialize template: ${(err as Error).message}`);
+    } finally {
+      setState((c) => ({ ...c, isInitializingTemplate: false }));
+    }
+  }
 
   function addEvent(stage: string, message: string) {
     setState((current) => ({
@@ -892,8 +924,13 @@ function CmsApplication() {
                   geminiApiKey={state.geminiApiKey || ""}
                   geminiEncrypted={Boolean(state.geminiEncryptedKey)}
                   googleAnalyticsId={state.googleAnalyticsId}
+                  siteUrl={state.siteUrl}
+                  hasFrontend={hasFrontend}
+                  isInitializingTemplate={state.isInitializingTemplate}
                   onSaveGeminiKey={handleSaveGeminiKey}
                   onClearGeminiKey={handleClearGeminiKey}
+                  onSaveSiteUrl={(url) => setState((curr) => ({ ...curr, siteUrl: url }))}
+                  onInitializeTemplate={initializeTemplate}
                 />
               }
             />
@@ -1319,6 +1356,15 @@ function EditorPage({
                       ? "Published!"
                       : `Publish ${seoScore < 50 ? "(Low SEO)" : ""}`}
               </Button>
+              {publishProgress === "published" && (
+                <Button
+                  type="button"
+                  onClick={() => window.open(seoMetadata.canonicalUrl, "_blank")}
+                  className="bg-green-600 hover:bg-green-700 text-white"
+                >
+                  View Live Post <Sparkles className="ml-2 h-4 w-4" />
+                </Button>
+              )}
             </div>
           </Panel>
         </div>
@@ -1643,19 +1689,30 @@ function SettingsPage({
   geminiApiKey,
   geminiEncrypted,
   googleAnalyticsId,
+  siteUrl,
+  hasFrontend,
+  isInitializingTemplate,
   onSaveGeminiKey,
-  onClearGeminiKey
+  onClearGeminiKey,
+  onSaveSiteUrl,
+  onInitializeTemplate
 }: {
   readonly repository?: ConnectedRepository;
   readonly geminiApiKey: string;
   readonly geminiEncrypted: boolean;
   readonly googleAnalyticsId?: string;
+  readonly siteUrl?: string;
+  readonly hasFrontend: boolean;
+  readonly isInitializingTemplate?: boolean;
   readonly onSaveGeminiKey: (key: string, passphrase?: string) => void;
   readonly onClearGeminiKey: () => void;
+  readonly onSaveSiteUrl: (url: string) => void;
+  readonly onInitializeTemplate: () => void;
 }) {
   const [apiKeyInput, setApiKeyInput] = React.useState(geminiApiKey);
   const [passphraseInput, setPassphraseInput] = React.useState("");
   const [storeLocally, setStoreLocally] = React.useState(false);
+  const [urlInput, setUrlInput] = React.useState(siteUrl || "");
 
   React.useEffect(() => {
     setApiKeyInput(geminiApiKey);
@@ -1673,6 +1730,30 @@ function SettingsPage({
           <Metric label="Branch" value={repository?.branch ?? "main"} />
         </Panel>
 
+        {!hasFrontend && repository && (
+          <Panel title="Frontend Setup">
+            <div className="space-y-4">
+              <div className="rounded-md bg-amber-50 p-4 border border-amber-200">
+                <h3 className="text-sm font-semibold text-amber-800">No Frontend Detected</h3>
+                <p className="mt-2 text-sm text-amber-700">
+                  This repository does not seem to have a frontend framework configured. Ilm is a Headless CMS, meaning it only manages content. Without a frontend, your blog will not be visible on the web.
+                </p>
+                <div className="mt-4">
+                  <Button
+                    onClick={onInitializeTemplate}
+                    disabled={isInitializingTemplate}
+                    className="w-full bg-amber-600 hover:bg-amber-700 text-white shadow-sm"
+                  >
+                    {isInitializingTemplate
+                      ? "Initializing..."
+                      : "Initialize Astro Blog Template ✨"}
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </Panel>
+        )}
+
         <Panel title="SEO & Analytics">
           <div className="space-y-4">
             <div>
@@ -1684,8 +1765,18 @@ function SettingsPage({
               <p className="mt-1 text-xs text-zinc-500">Loaded from config/seo.ts</p>
             </div>
             <div>
-              <Metric label="Canonical Base URL" value="https://example.com" />
-              <p className="mt-1 text-xs text-zinc-500">Fallback for RSS and Sitemap</p>
+              <Metric label="Canonical Base URL" value={siteUrl || "Not configured"} />
+              <p className="mt-1 text-xs text-zinc-500">Fallback for RSS and Sitemap. e.g. https://myblog.com</p>
+              <div className="mt-3 flex gap-2">
+                <input
+                  type="url"
+                  placeholder="https://example.com"
+                  value={urlInput}
+                  onChange={(e) => setUrlInput(e.target.value)}
+                  className="flex-1 rounded-md border border-zinc-300 p-2 text-sm focus:border-zinc-950 focus:outline-none"
+                />
+                <Button onClick={() => onSaveSiteUrl(urlInput)}>Save URL</Button>
+              </div>
             </div>
           </div>
         </Panel>

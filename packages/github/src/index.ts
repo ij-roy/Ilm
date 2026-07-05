@@ -224,6 +224,103 @@ export class GitHubClient {
     }
     return run.conclusion === "success" ? "completed" : "failed";
   }
+
+  async initializeAstroTemplate(ref: GitHubRepositoryRef): Promise<GitHubCommitResult> {
+    const TEMPLATE_OWNER = "ij-roy";
+    const TEMPLATE_REPO = "Ilm";
+    const TEMPLATE_PREFIX = "templates/astro-blog/";
+
+    // 1. Fetch the recursive tree of the template repository
+    const treeResponse = await this.octokit.git.getTree({
+      owner: TEMPLATE_OWNER,
+      repo: TEMPLATE_REPO,
+      tree_sha: "main",
+      recursive: "true"
+    });
+
+    // 2. Filter for files in the Astro template directory
+    const templateFiles = treeResponse.data.tree.filter(
+      (item) => item.path && item.path.startsWith(TEMPLATE_PREFIX) && item.type === "blob" && item.sha
+    );
+
+    if (templateFiles.length === 0) {
+      throw new Error("Could not find template files in the source repository.");
+    }
+
+    // 3. Download the base64 content for each blob
+    const commitFiles: GitHubCommitFile[] = await Promise.all(
+      templateFiles.map(async (file) => {
+        const blob = await this.octokit.git.getBlob({
+          owner: TEMPLATE_OWNER,
+          repo: TEMPLATE_REPO,
+          file_sha: file.sha!
+        });
+
+        // Strip the templates/astro-blog/ prefix
+        const targetPath = file.path!.substring(TEMPLATE_PREFIX.length);
+
+        return {
+          operation: "create" as const,
+          path: targetPath,
+          content: blob.data.content,
+          encoding: "base64" as const
+        };
+      })
+    );
+
+    // 4. Add the GitHub Actions deployment workflow
+    const deployWorkflowContent = `name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install, build, and upload your site
+        uses: withastro/action@v2
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: \${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+`;
+
+    commitFiles.push({
+      operation: "create",
+      path: ".github/workflows/deploy.yml",
+      content: deployWorkflowContent
+    });
+
+    // 5. Commit everything to the user's repository
+    return this.executeCommit({
+      owner: ref.owner,
+      repo: ref.repo,
+      branch: ref.branch,
+      message: "Initialize Astro blog template and GitHub Actions deploy workflow",
+      files: commitFiles
+    });
+  }
 }
 
 export class LocalGitHubClient {
@@ -298,6 +395,20 @@ export class LocalGitHubClient {
 
   async getWorkflowStatus(): Promise<GitHubWorkflowStatus> {
     return "completed";
+  }
+
+  async initializeAstroTemplate(ref: GitHubRepositoryRef): Promise<GitHubCommitResult> {
+    // Local mock implementation
+    return this.executeCommit({
+      owner: ref.owner,
+      repo: ref.repo,
+      branch: ref.branch,
+      message: "Initialize Astro blog template (Mock)",
+      files: [
+        { operation: "create", path: "package.json", content: "{}" },
+        { operation: "create", path: ".github/workflows/deploy.yml", content: "# Mock Deploy" }
+      ]
+    });
   }
 }
 
