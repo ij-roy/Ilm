@@ -136,56 +136,58 @@ export class GitHubClient {
       owner: request.owner,
       repo: request.repo,
       base_tree: baseCommit.data.tree.sha,
-      tree: (await Promise.all(
-        request.files.map(async (file) => {
-          if (file.operation === "delete") {
-            try {
-              // Verify the file exists in the branch before attempting to delete
-              await this.octokit.repos.getContent({
+      tree: (
+        await Promise.all(
+          request.files.map(async (file) => {
+            if (file.operation === "delete") {
+              try {
+                // Verify the file exists in the branch before attempting to delete
+                await this.octokit.repos.getContent({
+                  owner: request.owner,
+                  repo: request.repo,
+                  path: file.path,
+                  ref: request.branch
+                });
+                return {
+                  path: file.path,
+                  mode: "100644" as const,
+                  type: "blob" as const,
+                  sha: null
+                };
+              } catch (err: any) {
+                // If the file is not found (404), it's already deleted or never existed.
+                if (err.status === 404) {
+                  return null;
+                }
+                throw err;
+              }
+            }
+
+            if (file.encoding === "base64") {
+              const blob = await this.octokit.git.createBlob({
                 owner: request.owner,
                 repo: request.repo,
-                path: file.path,
-                ref: request.branch
+                content: file.content,
+                encoding: "base64"
               });
+
               return {
                 path: file.path,
                 mode: "100644" as const,
                 type: "blob" as const,
-                sha: null
+                sha: blob.data.sha
               };
-            } catch (err: any) {
-              // If the file is not found (404), it's already deleted or never existed.
-              if (err.status === 404) {
-                return null;
-              }
-              throw err;
             }
-          }
-
-          if (file.encoding === "base64") {
-            const blob = await this.octokit.git.createBlob({
-              owner: request.owner,
-              repo: request.repo,
-              content: file.content,
-              encoding: "base64"
-            });
 
             return {
               path: file.path,
               mode: "100644" as const,
               type: "blob" as const,
-              sha: blob.data.sha
+              content: file.content
             };
-          }
-
-          return {
-            path: file.path,
-            mode: "100644" as const,
-            type: "blob" as const,
-            content: file.content
-          };
-        })
-      )).filter((item): item is NonNullable<typeof item> => item !== null)
+          })
+        )
+      ).filter((item): item is NonNullable<typeof item> => item !== null)
     });
 
     const commit = await this.octokit.git.createCommit({
@@ -240,7 +242,8 @@ export class GitHubClient {
 
     // 2. Filter for files in the Astro template directory
     const templateFiles = treeResponse.data.tree.filter(
-      (item) => item.path && item.path.startsWith(TEMPLATE_PREFIX) && item.type === "blob" && item.sha
+      (item) =>
+        item.path && item.path.startsWith(TEMPLATE_PREFIX) && item.type === "blob" && item.sha
     );
 
     if (templateFiles.length === 0) {

@@ -426,7 +426,7 @@ function CmsApplication() {
       const result = await activeGithubClient.initializeAstroTemplate(state.repository);
       setStatus(`Template initialized successfully at ${result.sha}`);
       addEvent("repository", "Initialized Astro template");
-      
+
       const entries = await activeGithubClient.getRepositoryEntries(state.repository);
       setRepoEntries(entries);
     } catch (err: unknown) {
@@ -909,12 +909,33 @@ function CmsApplication() {
                 />
               }
             />
-            <Route path="/posts" element={<ListPage title="Posts" items={state.posts} connected={!!state.repository} />} />
-            <Route path="/drafts" element={<ListPage title="Drafts" items={state.drafts} connected={!!state.repository} />} />
-            <Route path="/media" element={<MediaPage media={state.media} onAdd={addMedia} connected={!!state.repository} />} />
+            <Route
+              path="/posts"
+              element={
+                <ListPage title="Posts" items={state.posts} connected={!!state.repository} />
+              }
+            />
+            <Route
+              path="/drafts"
+              element={
+                <ListPage title="Drafts" items={state.drafts} connected={!!state.repository} />
+              }
+            />
+            <Route
+              path="/media"
+              element={
+                <MediaPage media={state.media} onAdd={addMedia} connected={!!state.repository} />
+              }
+            />
             <Route
               path="/search"
-              element={<SearchPage posts={state.posts} drafts={state.drafts} connected={!!state.repository} />}
+              element={
+                <SearchPage
+                  posts={state.posts}
+                  drafts={state.drafts}
+                  connected={!!state.repository}
+                />
+              }
             />
             <Route path="/analytics" element={<AnalyticsPage />} />
             <Route
@@ -991,7 +1012,13 @@ function Dashboard({
         />
         <StatusCard
           title="Structure"
-          value={!state.repository ? "Not connected" : repositoryValid ? "Valid template" : "Needs review"}
+          value={
+            !state.repository
+              ? "Not connected"
+              : repositoryValid
+                ? "Valid template"
+                : "Needs review"
+          }
           icon={<CheckCircle2 />}
           loading={!state.repository && status.includes("Connecting")}
         />
@@ -1001,10 +1028,10 @@ function Dashboard({
           icon={<Search />}
           loading={!state.repository && status.includes("Connecting")}
         />
-        <StatusCard 
-          title="Last status" 
-          value={!state.repository && status === "Ready" ? "Waiting" : status} 
-          icon={<UploadCloud />} 
+        <StatusCard
+          title="Last status"
+          value={!state.repository && status === "Ready" ? "Waiting" : status}
+          icon={<UploadCloud />}
         />
       </section>
       <section className="grid gap-4 px-6 pb-6 lg:grid-cols-[1fr_360px]">
@@ -1028,7 +1055,7 @@ function Dashboard({
         <div className="rounded-md border border-zinc-200 bg-white p-5">
           <h2 className="text-lg font-semibold">Repository connection</h2>
           <p className="mt-2 text-sm text-zinc-600">
-            Connect your GitHub repository to start publishing. Ilm securely stores all your content 
+            Connect your GitHub repository to start publishing. Ilm securely stores all your content
             directly in your repository, so you retain 100% ownership of your data.
           </p>
           {state.repository ? (
@@ -1355,17 +1382,23 @@ function EditorPage({
                   publishProgress === "deploying" ||
                   publishProgress === "building"
                 }
-                title={!connected ? "Connect repository first" : seoScore < 50 ? "Warning: Low SEO score" : "Ready to publish"}
+                title={
+                  !connected
+                    ? "Connect repository first"
+                    : seoScore < 50
+                      ? "Warning: Low SEO score"
+                      : "Ready to publish"
+                }
               >
                 {!connected
                   ? "Connect repo to publish"
                   : publishProgress === "creating-commit"
-                  ? "Committing..."
-                  : publishProgress === "building" || publishProgress === "deploying"
-                    ? "Deploying..."
-                    : publishProgress === "published"
-                      ? "Published!"
-                      : `Publish ${seoScore < 50 ? "(Low SEO)" : ""}`}
+                    ? "Committing..."
+                    : publishProgress === "building" || publishProgress === "deploying"
+                      ? "Deploying..."
+                      : publishProgress === "published"
+                        ? "Published!"
+                        : `Publish ${seoScore < 50 ? "(Low SEO)" : ""}`}
               </Button>
               {publishProgress === "published" && (
                 <Button
@@ -1623,7 +1656,11 @@ function ListPage({
         {items.length === 0 ? (
           <EmptyState
             title={!connected ? "Repository not connected" : `No ${title.toLowerCase()} yet`}
-            description={!connected ? "Connect to GitHub to view content." : "Use the editor to create content."}
+            description={
+              !connected
+                ? "Connect to GitHub to view content."
+                : "Use the editor to create content."
+            }
           />
         ) : (
           items.map((item) => (
@@ -1655,10 +1692,7 @@ function SearchPage({
 
   return (
     <>
-      <PageHeader
-        title="Search"
-        description="Search through your posts and drafts."
-      />
+      <PageHeader title="Search" description="Search through your posts and drafts." />
       <section className="p-6">
         <Panel title="Search content">
           <input
@@ -1762,7 +1796,9 @@ function SettingsPage({
               <div className="rounded-md bg-amber-50 p-4 border border-amber-200">
                 <h3 className="text-sm font-semibold text-amber-800">No Frontend Detected</h3>
                 <p className="mt-2 text-sm text-amber-700">
-                  This repository does not seem to have a frontend framework configured. Ilm is a Headless CMS, meaning it only manages content. Without a frontend, your blog will not be visible on the web.
+                  This repository does not seem to have a frontend framework configured. Ilm is a
+                  Headless CMS, meaning it only manages content. Without a frontend, your blog will
+                  not be visible on the web.
                 </p>
                 <div className="mt-4">
                   <Button
@@ -1792,7 +1828,9 @@ function SettingsPage({
             </div>
             <div>
               <Metric label="Canonical Base URL" value={siteUrl || "Not configured"} />
-              <p className="mt-1 text-xs text-zinc-500">Fallback for RSS and Sitemap. e.g. https://myblog.com</p>
+              <p className="mt-1 text-xs text-zinc-500">
+                Fallback for RSS and Sitemap. e.g. https://myblog.com
+              </p>
               <div className="mt-3 flex gap-2">
                 <input
                   type="url"
