@@ -100,10 +100,26 @@ select:focus {
 }
 
 /* Landing Page Styles */
-.glass-nav {
-  background: rgba(0, 0, 0, 0.4);
+.nav-base {
+  transition: all 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.nav-docked {
+  max-width: 64rem; /* max-w-5xl approx */
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(255, 255, 255, 0.1);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
+}
+
+.nav-floating {
+  max-width: 48rem; /* max-w-3xl approx */
+  background: rgba(0, 0, 0, 0.4);
+  border-color: rgba(255, 255, 255, 0.2);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.8);
+  transform: scale(0.98);
 }
 
 .glass-card {

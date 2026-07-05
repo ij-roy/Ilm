@@ -16,9 +16,9 @@ export function LandingPage({ onConnectGitHub }: { readonly onConnectGitHub: () 
   return (
     <div className="bg-black text-white min-h-screen font-sans selection:bg-cyan-500/30">
       {/* Navbar */}
-      <div className="fixed top-0 left-0 right-0 z-50 flex justify-center pt-6 px-4">
+      <div className="fixed top-4 left-0 right-0 z-50 flex justify-center px-4 pointer-events-none">
         <nav
-          className={`transition-all duration-300 rounded-full px-4 md:px-6 py-3 flex items-center justify-between w-full max-w-5xl ${isScrolled ? "glass-nav shadow-[0_8px_32px_rgba(0,0,0,0.5)] border border-white/10" : "bg-transparent border border-transparent"}`}
+          className={`pointer-events-auto rounded-full px-6 py-3 flex items-center justify-between w-full border nav-base ${isScrolled ? "nav-floating" : "nav-docked"}`}
         >
           <div className="flex items-center gap-3">
             <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-cyan-400 to-purple-500 flex items-center justify-center font-bold text-black shadow-lg">
