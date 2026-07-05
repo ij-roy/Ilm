@@ -898,6 +898,7 @@ function CmsApplication() {
                   readingTime={estimateReadingTimeMinutes(state.activeDraft.markdown)}
                   aiSuggestion={state.aiSuggestion}
                   localRecoveryAvailable={localRecoveryAvailable}
+                  connected={!!state.repository}
                   onChange={updateDraft}
                   onGenerateSlug={generateSlugFromTitle}
                   onSuggest={createAiSuggestion}
@@ -908,12 +909,12 @@ function CmsApplication() {
                 />
               }
             />
-            <Route path="/posts" element={<ListPage title="Posts" items={state.posts} />} />
-            <Route path="/drafts" element={<ListPage title="Drafts" items={state.drafts} />} />
-            <Route path="/media" element={<MediaPage media={state.media} onAdd={addMedia} />} />
+            <Route path="/posts" element={<ListPage title="Posts" items={state.posts} connected={!!state.repository} />} />
+            <Route path="/drafts" element={<ListPage title="Drafts" items={state.drafts} connected={!!state.repository} />} />
+            <Route path="/media" element={<MediaPage media={state.media} onAdd={addMedia} connected={!!state.repository} />} />
             <Route
               path="/search"
-              element={<SearchPage posts={state.posts} drafts={state.drafts} />}
+              element={<SearchPage posts={state.posts} drafts={state.drafts} connected={!!state.repository} />}
             />
             <Route path="/analytics" element={<AnalyticsPage />} />
             <Route
@@ -984,23 +985,27 @@ function Dashboard({
       <section className="grid gap-4 p-6 lg:grid-cols-4">
         <StatusCard
           title="Repository"
-          value={state.repository?.fullName ?? "Disconnected"}
+          value={state.repository?.fullName ?? "Not connected"}
           icon={<FolderGit2 />}
           loading={!state.repository && status.includes("Connecting")}
         />
         <StatusCard
-          title="Contract"
-          value={repositoryValid ? "Valid template" : "Needs review"}
+          title="Structure"
+          value={!state.repository ? "Not connected" : repositoryValid ? "Valid template" : "Needs review"}
           icon={<CheckCircle2 />}
           loading={!state.repository && status.includes("Connecting")}
         />
         <StatusCard
           title="SEO score"
-          value={`${seoScore}/100`}
+          value={!state.repository ? "N/A" : `${seoScore}/100`}
           icon={<Search />}
           loading={!state.repository && status.includes("Connecting")}
         />
-        <StatusCard title="Last status" value={status} icon={<UploadCloud />} />
+        <StatusCard 
+          title="Last status" 
+          value={!state.repository && status === "Ready" ? "Waiting" : status} 
+          icon={<UploadCloud />} 
+        />
       </section>
       <section className="grid gap-4 px-6 pb-6 lg:grid-cols-[1fr_360px]">
         <div className="rounded-md border border-zinc-200 bg-white p-5">
@@ -1023,8 +1028,8 @@ function Dashboard({
         <div className="rounded-md border border-zinc-200 bg-white p-5">
           <h2 className="text-lg font-semibold">Repository connection</h2>
           <p className="mt-2 text-sm text-zinc-600">
-            The development adapter uses the same manifest shape as GitHub commits, so save and
-            publish flows are exercised without storing secrets locally.
+            Connect your GitHub repository to start publishing. Ilm securely stores all your content 
+            directly in your repository, so you retain 100% ownership of your data.
           </p>
           {state.repository ? (
             <div className="mt-4 rounded-md border border-green-200 bg-green-50 p-3">
@@ -1071,10 +1076,12 @@ function Dashboard({
               </div>
             </div>
           ) : (
-            <Button className="mt-4" onClick={onConnect}>
-              <KeyRound className="h-4 w-4" />
-              Connect GitHub
-            </Button>
+            <div className="mt-4 flex justify-start">
+              <Button onClick={onConnect}>
+                <KeyRound className="mr-2 h-4 w-4" />
+                Connect GitHub
+              </Button>
+            </div>
           )}
         </div>
       </section>
@@ -1196,6 +1203,7 @@ function EditorPage({
   readonly aiSuggestion?: AiSuggestion;
   readonly publishProgress?: PublishProgressStage;
   readonly localRecoveryAvailable: boolean;
+  readonly connected: boolean;
   readonly onChange: (patch: Partial<DraftRecord>) => void;
   readonly onGenerateSlug: () => void;
   readonly onSuggest: (kind: AiSuggestionKind) => void;
@@ -1334,21 +1342,24 @@ function EditorPage({
               className="min-h-[420px] w-full rounded-md border border-zinc-300 bg-white p-4 text-sm leading-6 focus-within:border-zinc-950 focus-within:ring-2 focus-within:ring-zinc-200"
             />
             <div className="mt-4 flex flex-wrap gap-3">
-              <Button type="button" onClick={onSaveDraft}>
-                Save Draft
+              <Button type="button" onClick={onSaveDraft} disabled={!connected}>
+                {!connected ? "Connect repo to save" : "Save Draft"}
               </Button>
               <Button
                 type="button"
                 variant="secondary"
                 onClick={onPublish}
                 disabled={
+                  !connected ||
                   publishProgress === "creating-commit" ||
                   publishProgress === "deploying" ||
                   publishProgress === "building"
                 }
-                title={seoScore < 50 ? "Warning: Low SEO score" : "Ready to publish"}
+                title={!connected ? "Connect repository first" : seoScore < 50 ? "Warning: Low SEO score" : "Ready to publish"}
               >
-                {publishProgress === "creating-commit"
+                {!connected
+                  ? "Connect repo to publish"
+                  : publishProgress === "creating-commit"
                   ? "Committing..."
                   : publishProgress === "building" || publishProgress === "deploying"
                     ? "Deploying..."
@@ -1528,10 +1539,12 @@ function EditorPage({
 
 function MediaPage({
   media,
-  onAdd
+  onAdd,
+  connected
 }: {
   readonly media: readonly MediaRecord[];
   readonly onAdd: (input: Omit<MediaRecord, "id" | "path">) => void;
+  readonly connected: boolean;
 }) {
   const [fileName, setFileName] = React.useState("cover.webp");
   const [alt, setAlt] = React.useState("Cover image");
@@ -1540,7 +1553,7 @@ function MediaPage({
     <>
       <PageHeader
         title="Media"
-        description="Plan images, covers, and attachments for repository-backed publishing."
+        description="Upload images, covers, and attachments for your repository."
       />
       <section className="grid gap-4 p-6 lg:grid-cols-[360px_1fr]">
         <Panel title="Add media">
@@ -1553,6 +1566,7 @@ function MediaPage({
             </Field>
             <Button
               type="button"
+              disabled={!connected}
               onClick={() =>
                 onAdd({
                   fileName,
@@ -1564,14 +1578,16 @@ function MediaPage({
                 })
               }
             >
-              Add Cover
+              Add Media
             </Button>
           </div>
         </Panel>
         <Panel title="Library">
           <div className="grid gap-3 md:grid-cols-2">
             {media.length === 0 ? (
-              <p className="text-sm text-zinc-600">No media planned yet.</p>
+              <p className="text-sm text-zinc-600">
+                {!connected ? "Repository not connected." : "No media uploaded yet."}
+              </p>
             ) : (
               media.map((item) => (
                 <div key={item.id} className="rounded-md border border-zinc-200 p-3">
@@ -1590,10 +1606,12 @@ function MediaPage({
 
 function ListPage({
   title,
-  items
+  items,
+  connected
 }: {
   readonly title: string;
   readonly items: readonly DraftRecord[];
+  readonly connected: boolean;
 }) {
   return (
     <>
@@ -1604,8 +1622,8 @@ function ListPage({
       <section className="grid gap-3 p-6 lg:grid-cols-2">
         {items.length === 0 ? (
           <EmptyState
-            title={`No ${title.toLowerCase()} yet`}
-            description="Use the editor to create content."
+            title={!connected ? "Repository not connected" : `No ${title.toLowerCase()} yet`}
+            description={!connected ? "Connect to GitHub to view content." : "Use the editor to create content."}
           />
         ) : (
           items.map((item) => (
@@ -1623,10 +1641,12 @@ function ListPage({
 
 function SearchPage({
   posts,
-  drafts
+  drafts,
+  connected
 }: {
   readonly posts: readonly DraftRecord[];
   readonly drafts: readonly DraftRecord[];
+  readonly connected: boolean;
 }) {
   const [query, setQuery] = React.useState("");
   const results = [...posts, ...drafts].filter((item) =>
@@ -1637,7 +1657,7 @@ function SearchPage({
     <>
       <PageHeader
         title="Search"
-        description="Search local CMS state while the template owns build-time Pagefind indexing."
+        description="Search through your posts and drafts."
       />
       <section className="p-6">
         <Panel title="Search content">
@@ -1648,12 +1668,18 @@ function SearchPage({
             onChange={(event) => setQuery(event.target.value)}
           />
           <div className="mt-4 space-y-3">
-            {results.map((item) => (
-              <div key={item.id} className="rounded-md border border-zinc-200 p-3">
-                <p className="font-medium">{item.title}</p>
-                <p className="text-sm text-zinc-600">{item.description}</p>
-              </div>
-            ))}
+            {!connected ? (
+              <p className="text-sm text-zinc-600">Repository not connected.</p>
+            ) : results.length === 0 && query ? (
+              <p className="text-sm text-zinc-600">No results found.</p>
+            ) : (
+              results.map((item) => (
+                <div key={item.id} className="rounded-md border border-zinc-200 p-3">
+                  <p className="font-medium">{item.title}</p>
+                  <p className="text-sm text-zinc-600">{item.description}</p>
+                </div>
+              ))
+            )}
           </div>
         </Panel>
       </section>
@@ -1678,7 +1704,7 @@ function AnalyticsPage() {
       <section className="grid gap-4 p-6 md:grid-cols-3">
         <StatusCard title="Sessions" value="Connect Google" icon={<BarChart3 />} />
         <StatusCard title="Clicks" value="Connect Search Console" icon={<Search />} />
-        <StatusCard title="OAuth" value={new URL(url).hostname} icon={<KeyRound />} />
+        <StatusCard title="Auth Provider" value={new URL(url).hostname} icon={<KeyRound />} />
       </section>
     </>
   );
@@ -1853,7 +1879,7 @@ function SettingsPage({
         <Panel title="Security">
           <p className="text-sm text-zinc-600">
             Access tokens belong to the user session. The CMS does not introduce a traditional
-            database or copy user content into this repository.
+            database or copy your content to our servers.
           </p>
         </Panel>
       </section>
