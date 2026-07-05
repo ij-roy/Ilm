@@ -251,7 +251,7 @@ export class GitHubClient {
     }
 
     // 3. Download the base64 content for each blob
-    const commitFiles: GitHubCommitFile[] = await Promise.all(
+    const commitFiles: GitHubFileWrite[] = await Promise.all(
       templateFiles.map(async (file) => {
         const blob = await this.octokit.git.getBlob({
           owner: TEMPLATE_OWNER,
@@ -263,7 +263,7 @@ export class GitHubClient {
         const targetPath = file.path!.substring(TEMPLATE_PREFIX.length);
 
         return {
-          operation: "create" as const,
+          operation: "upsert" as const,
           path: targetPath,
           content: blob.data.content,
           encoding: "base64" as const
@@ -310,9 +310,10 @@ jobs:
 `;
 
     commitFiles.push({
-      operation: "create",
+      operation: "upsert",
       path: ".github/workflows/deploy.yml",
-      content: deployWorkflowContent
+      content: deployWorkflowContent,
+      encoding: "utf-8"
     });
 
     // 5. Commit everything to the user's repository
@@ -408,8 +409,8 @@ export class LocalGitHubClient {
       branch: ref.branch,
       message: "Initialize Astro blog template (Mock)",
       files: [
-        { operation: "create", path: "package.json", content: "{}" },
-        { operation: "create", path: ".github/workflows/deploy.yml", content: "# Mock Deploy" }
+        { operation: "upsert", path: "package.json", content: "{}", encoding: "utf-8" },
+        { operation: "upsert", path: ".github/workflows/deploy.yml", content: "# Mock Deploy", encoding: "utf-8" }
       ]
     });
   }
