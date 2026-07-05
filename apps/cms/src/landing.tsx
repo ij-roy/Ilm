@@ -209,7 +209,7 @@ export function LandingPage({ onConnectGitHub }: { readonly onConnectGitHub: () 
           </p>
           <Button
             onClick={onConnectGitHub}
-            className="bg-gradient-to-r from-cyan-500 to-purple-600 text-white hover:opacity-90 h-14 px-10 text-lg rounded-full font-medium shadow-[0_0_40px_rgba(6,182,212,0.3)] hover:shadow-[0_0_60px_rgba(168,85,247,0.4)] transition-all"
+            className="inline-flex items-center justify-center whitespace-nowrap bg-gradient-to-r from-cyan-500 to-purple-600 text-white hover:opacity-90 h-14 px-10 text-lg rounded-full font-medium shadow-[0_0_40px_rgba(6,182,212,0.3)] hover:shadow-[0_0_60px_rgba(168,85,247,0.4)] transition-all"
           >
             Continue with GitHub <ArrowRight className="ml-2 w-5 h-5" />
           </Button>
