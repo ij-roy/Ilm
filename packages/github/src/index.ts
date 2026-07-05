@@ -410,7 +410,12 @@ export class LocalGitHubClient {
       message: "Initialize Astro blog template (Mock)",
       files: [
         { operation: "upsert", path: "package.json", content: "{}", encoding: "utf-8" },
-        { operation: "upsert", path: ".github/workflows/deploy.yml", content: "# Mock Deploy", encoding: "utf-8" }
+        {
+          operation: "upsert",
+          path: ".github/workflows/deploy.yml",
+          content: "# Mock Deploy",
+          encoding: "utf-8"
+        }
       ]
     });
   }
