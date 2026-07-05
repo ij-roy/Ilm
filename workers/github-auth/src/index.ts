@@ -179,7 +179,7 @@ async function handleGitHubAppCallback(
     if (installationId) {
       hashParams.set("installation_id", installationId);
     }
-    
+
     if (!userToken) {
       hashParams.set("error", "auth_failed");
       redirectUrl.hash = hashParams.toString();

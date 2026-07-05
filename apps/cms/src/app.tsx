@@ -259,8 +259,13 @@ function CmsApplication() {
     if (!status || status === "Ready") return;
     const lowerStatus = status.toLowerCase();
     if (lowerStatus.includes("failed") || lowerStatus.includes("error")) return;
-    if (lowerStatus.includes("connecting") || lowerStatus.includes("fetching") || lowerStatus.includes("generating")) return;
-    
+    if (
+      lowerStatus.includes("connecting") ||
+      lowerStatus.includes("fetching") ||
+      lowerStatus.includes("generating")
+    )
+      return;
+
     const timer = setTimeout(() => setStatus("Ready"), 5000);
     return () => clearTimeout(timer);
   }, [status]);
@@ -305,7 +310,7 @@ function CmsApplication() {
   React.useEffect(() => {
     const queryParams = new URLSearchParams(window.location.search);
     const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ""));
-    
+
     // Check hash for security, but fallback to query params for backward compatibility
     const installationId = hashParams.get("installation_id") || queryParams.get("installation_id");
     const userToken = hashParams.get("user_token") || queryParams.get("user_token");
@@ -818,14 +823,15 @@ function CmsApplication() {
             >
               {status.toLowerCase().includes("failed") || status.toLowerCase().includes("error") ? (
                 <span className="text-red-400">⚠️</span>
-              ) : status.toLowerCase().includes("success") || status.toLowerCase().includes("connected") ? (
+              ) : status.toLowerCase().includes("success") ||
+                status.toLowerCase().includes("connected") ? (
                 <span className="text-green-400">✓</span>
               ) : (
                 <span className="text-blue-400">ℹ</span>
               )}
               <span className="flex-1">{status}</span>
-              <button 
-                onClick={() => setStatus("Ready")} 
+              <button
+                onClick={() => setStatus("Ready")}
                 className="text-zinc-400 hover:text-white transition-colors"
                 aria-label="Close"
               >
