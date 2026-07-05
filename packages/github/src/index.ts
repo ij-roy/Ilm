@@ -136,15 +136,30 @@ export class GitHubClient {
       owner: request.owner,
       repo: request.repo,
       base_tree: baseCommit.data.tree.sha,
-      tree: await Promise.all(
+      tree: (await Promise.all(
         request.files.map(async (file) => {
           if (file.operation === "delete") {
-            return {
-              path: file.path,
-              mode: "100644" as const,
-              type: "blob" as const,
-              sha: null
-            };
+            try {
+              // Verify the file exists in the branch before attempting to delete
+              await this.octokit.repos.getContent({
+                owner: request.owner,
+                repo: request.repo,
+                path: file.path,
+                ref: request.branch
+              });
+              return {
+                path: file.path,
+                mode: "100644" as const,
+                type: "blob" as const,
+                sha: null
+              };
+            } catch (err: any) {
+              // If the file is not found (404), it's already deleted or never existed.
+              if (err.status === 404) {
+                return null;
+              }
+              throw err;
+            }
           }
 
           if (file.encoding === "base64") {
@@ -170,7 +185,7 @@ export class GitHubClient {
             content: file.content
           };
         })
-      )
+      )).filter((item): item is NonNullable<typeof item> => item !== null)
     });
 
     const commit = await this.octokit.git.createCommit({
