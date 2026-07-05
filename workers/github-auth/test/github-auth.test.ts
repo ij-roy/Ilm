@@ -86,13 +86,13 @@ describe("@ilm/github-auth worker", () => {
     vi.unstubAllGlobals();
   });
 
-  it("returns 404 for removed installation-token endpoint", async () => {
+  it("returns 401 if installation-token endpoint is called without token", async () => {
     const env: Env = { GITHUB_APP_ID: "12345" };
     const response = await worker.fetch(
       new Request("https://auth.ilm.dev/github/app/installation-token", { method: "POST" }),
       env
     );
-    expect(response.status).toBe(404);
+    expect(response.status).toBe(401);
   });
 
   it("redirects on callback route", async () => {
@@ -127,7 +127,7 @@ describe("@ilm/github-auth worker", () => {
 
     expect(response.status).toBe(302);
     expect(response.headers.get("Location")).toBe(
-      "http://localhost:5173/dashboard?installation_id=9876&access_token=inst_token"
+      "http://localhost:5173/dashboard#user_token=user_token"
     );
 
     vi.unstubAllGlobals();
