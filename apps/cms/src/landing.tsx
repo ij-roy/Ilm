@@ -8,8 +8,13 @@ export function LandingPage({ onConnectGitHub }: { readonly onConnectGitHub: () 
   const [isScrolled, setIsScrolled] = useState(false);
 
   useEffect(() => {
-    const handleScroll = () => setIsScrolled(window.scrollY > 20);
-    window.addEventListener("scroll", handleScroll);
+    const handleScroll = () => {
+      const scrollPos = window.scrollY || document.documentElement.scrollTop;
+      setIsScrolled(scrollPos > 20);
+    };
+    window.addEventListener("scroll", handleScroll, { passive: true });
+    // Trigger on mount
+    handleScroll();
     return () => window.removeEventListener("scroll", handleScroll);
   }, []);
 
@@ -18,7 +23,7 @@ export function LandingPage({ onConnectGitHub }: { readonly onConnectGitHub: () 
       {/* Navbar */}
       <div className="fixed top-0 left-0 right-0 z-50 flex justify-center pt-6 px-4">
         <nav
-          className={`transition-all duration-300 rounded-full px-4 md:px-6 py-3 flex items-center justify-between w-full max-w-5xl ${isScrolled ? "glass-nav shadow-[0_8px_32px_rgba(0,0,0,0.5)] border border-white/10" : "bg-transparent border border-transparent"}`}
+          className={`transition-all duration-300 rounded-full px-4 md:px-6 py-3 flex items-center justify-between w-full max-w-5xl ${isScrolled ? "bg-black/40 backdrop-blur-xl shadow-[0_8px_32px_rgba(0,0,0,0.5)] border border-white/10" : "bg-transparent border border-transparent"}`}
         >
           <div className="flex items-center gap-3">
             <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-cyan-400 to-purple-500 flex items-center justify-center font-bold text-black shadow-lg">
