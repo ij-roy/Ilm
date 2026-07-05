@@ -175,39 +175,24 @@ async function handleGitHubAppCallback(
     const tokenData = (await tokenRes.json()) as { access_token: string };
     const userToken = tokenData.access_token;
 
+    const hashParams = new URLSearchParams();
+    if (installationId) {
+      hashParams.set("installation_id", installationId);
+    }
+    
     if (!userToken) {
-      redirectUrl.searchParams.set("error", "auth_failed");
+      hashParams.set("error", "auth_failed");
+      redirectUrl.hash = hashParams.toString();
       return Response.redirect(redirectUrl.toString(), 302);
     }
 
-    const instRes = await fetch("https://api.github.com/user/installations", {
-      headers: { Authorization: `Bearer ${userToken}`, "User-Agent": "ilm-github-auth" }
-    });
-    const instData = (await instRes.json()) as { installations: Array<{ id: number }> };
-
-    if (!instData.installations || instData.installations.length === 0) {
-      return Response.redirect(`${appData.html_url}/installations/new`, 302);
-    }
-
-    const targetInstallationId = instData.installations[0].id;
-    const accessRes = await fetch(
-      `https://api.github.com/app/installations/${targetInstallationId}/access_tokens`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${jwt}`,
-          "User-Agent": "ilm-github-auth",
-          Accept: "application/vnd.github+json"
-        }
-      }
-    );
-    const accessData = (await accessRes.json()) as { token: string };
-
-    redirectUrl.searchParams.set("installation_id", targetInstallationId.toString());
-    redirectUrl.searchParams.set("access_token", accessData.token);
+    hashParams.set("user_token", userToken);
+    redirectUrl.hash = hashParams.toString();
     return Response.redirect(redirectUrl.toString(), 302);
   } catch {
-    redirectUrl.searchParams.set("error", "callback_crash");
+    const hashParams = new URLSearchParams();
+    hashParams.set("error", "callback_crash");
+    redirectUrl.hash = hashParams.toString();
     return Response.redirect(redirectUrl.toString(), 302);
   }
 }
@@ -265,6 +250,91 @@ async function handleGetAppMetadata(env: Env, corsOrigin: string): Promise<Respo
   }
 }
 
+async function handleGenerateInstallationToken(
+  request: Request,
+  env: Env,
+  corsOrigin: string
+): Promise<Response> {
+  const authHeader = request.headers.get("Authorization");
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    return json({ error: "Missing or invalid Authorization header" }, { status: 401 }, corsOrigin);
+  }
+  const userToken = authHeader.substring(7);
+
+  let body: { installationId: number };
+  try {
+    body = (await request.json()) as { installationId: number };
+  } catch {
+    return json({ error: "Invalid JSON body" }, { status: 400 }, corsOrigin);
+  }
+
+  if (!body.installationId) {
+    return json({ error: "Missing installationId" }, { status: 400 }, corsOrigin);
+  }
+
+  if (!env.GITHUB_APP_PRIVATE_KEY) {
+    return json({ error: "Worker missing private key" }, { status: 500 }, corsOrigin);
+  }
+
+  try {
+    // Verify user has access to this installation
+    const instRes = await fetch("https://api.github.com/user/installations", {
+      headers: { Authorization: `Bearer ${userToken}`, "User-Agent": "ilm-github-auth" }
+    });
+
+    if (!instRes.ok) {
+      return json(
+        { error: "Failed to fetch user installations" },
+        { status: instRes.status },
+        corsOrigin
+      );
+    }
+
+    const instData = (await instRes.json()) as { installations: Array<{ id: number }> };
+    const hasAccess = instData.installations.some((inst) => inst.id === body.installationId);
+
+    if (!hasAccess) {
+      return json(
+        { error: "User does not have access to this installation" },
+        { status: 403 },
+        corsOrigin
+      );
+    }
+
+    // Generate installation token
+    const jwt = await signJwt(env.GITHUB_APP_ID, env.GITHUB_APP_PRIVATE_KEY);
+    const accessRes = await fetch(
+      `https://api.github.com/app/installations/${body.installationId}/access_tokens`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${jwt}`,
+          "User-Agent": "ilm-github-auth",
+          Accept: "application/vnd.github+json"
+        }
+      }
+    );
+
+    if (!accessRes.ok) {
+      const errText = await accessRes.text();
+      return json(
+        { error: "Failed to generate installation token", details: errText },
+        { status: accessRes.status },
+        corsOrigin
+      );
+    }
+
+    const accessData = (await accessRes.json()) as { token: string };
+    return json({ token: accessData.token }, { status: 200 }, corsOrigin);
+  } catch (err: unknown) {
+    return json(
+      { error: "Server error", details: (err as Error).message },
+      { status: 500 },
+      corsOrigin
+    );
+  }
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -301,6 +371,10 @@ export default {
         }
       }
       return handleGitHubAppCallback(url, env, targetOrigin);
+    }
+
+    if (url.pathname === "/github/app/installation-token" && request.method === "POST") {
+      return handleGenerateInstallationToken(request, env, corsOrigin);
     }
 
     return json({ error: "Not Found" }, { status: 404 }, corsOrigin);

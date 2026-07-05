@@ -114,6 +114,7 @@ type CmsState = {
   readonly events: readonly PublishEvent[];
   readonly aiSuggestion?: AiSuggestion;
   readonly publishProgress?: PublishProgressStage;
+  readonly userToken?: string;
   readonly accessToken?: string;
   readonly installationId?: string;
   readonly geminiApiKey?: string;
@@ -255,6 +256,16 @@ function CmsApplication() {
   const [status, setStatus] = React.useState("Ready");
 
   React.useEffect(() => {
+    if (!status || status === "Ready") return;
+    const lowerStatus = status.toLowerCase();
+    if (lowerStatus.includes("failed") || lowerStatus.includes("error")) return;
+    if (lowerStatus.includes("connecting") || lowerStatus.includes("fetching") || lowerStatus.includes("generating")) return;
+    
+    const timer = setTimeout(() => setStatus("Ready"), 5000);
+    return () => clearTimeout(timer);
+  }, [status]);
+
+  React.useEffect(() => {
     window.localStorage.setItem(storageKey, JSON.stringify(state));
   }, [state]);
 
@@ -292,23 +303,26 @@ function CmsApplication() {
   }, []);
 
   React.useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const installationId = params.get("installation_id");
-    const accessToken = params.get("access_token");
-    const errorMsg = params.get("error");
-    const setupAction = params.get("setup_action");
+    const queryParams = new URLSearchParams(window.location.search);
+    const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+    
+    // Check hash for security, but fallback to query params for backward compatibility
+    const installationId = hashParams.get("installation_id") || queryParams.get("installation_id");
+    const userToken = hashParams.get("user_token") || queryParams.get("user_token");
+    const errorMsg = hashParams.get("error") || queryParams.get("error");
+    const setupAction = hashParams.get("setup_action") || queryParams.get("setup_action");
 
     if (errorMsg) {
       setStatus(`GitHub connection failed: ${errorMsg}`);
       addEvent("auth", `Auth error: ${errorMsg}`);
-    } else if (installationId && accessToken) {
+    } else if (userToken) {
       setState((current) => ({
         ...current,
-        accessToken: accessToken,
-        installationId: installationId
+        userToken: userToken,
+        installationId: installationId || current.installationId
       }));
       setStatus("GitHub connected successfully!");
-      addEvent("auth", `Authenticated App Installation ${installationId}`);
+      addEvent("auth", `Authenticated user`);
 
       if (setupAction === "update") {
         // Automatically reload repositories if the user just updated their installation
@@ -316,7 +330,8 @@ function CmsApplication() {
         setTimeout(() => loadRepositories(), 500);
       }
 
-      const cleanUrl = window.location.pathname + window.location.hash;
+      // Completely clear query string and hash from the URL
+      const cleanUrl = window.location.pathname;
       window.history.replaceState({}, document.title, cleanUrl);
     }
   }, []);
@@ -396,14 +411,15 @@ function CmsApplication() {
 
   async function loadRepositories() {
     try {
-      const repositories = await activeGithubClient.listRepositories();
+      if (!state.userToken) throw new Error("Not authenticated");
+      const repositories = await GitHubClient.listAvailableRepositories(state.userToken);
       setState((curr) => ({ ...curr, availableRepositories: repositories }));
     } catch (err: unknown) {
       setStatus(`Failed to load repositories: ${(err as Error).message}`);
     }
   }
 
-  function selectRepository(repoId: number) {
+  async function selectRepository(repoId: number) {
     const repository = state.availableRepositories?.find((r) => r.id === repoId);
     if (!repository) return;
 
@@ -416,19 +432,46 @@ function CmsApplication() {
         fullName: repository.fullName
       }
     }));
-    setStatus(`Connected ${repository.fullName}`);
+    setStatus(`Connected ${repository.fullName}. Fetching access token...`);
     addEvent("repository", `Connected ${repository.fullName}`);
+
+    if (repository.installationId && state.userToken) {
+      try {
+        const workerUrl = import.meta.env.VITE_GITHUB_AUTH_WORKER_URL;
+        const res = await fetch(`${workerUrl}/github/app/installation-token`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${state.userToken}`
+          },
+          body: JSON.stringify({ installationId: repository.installationId })
+        });
+        if (!res.ok) {
+          const errData = await res.json().catch(() => null);
+          throw new Error(errData?.error || "Failed to fetch installation token");
+        }
+        const data = await res.json();
+        setState((current) => ({
+          ...current,
+          accessToken: data.token,
+          installationId: String(repository.installationId)
+        }));
+        setStatus(`Ready to edit ${repository.fullName}`);
+      } catch (err) {
+        setStatus(`Failed to fetch access token: ${(err as Error).message}`);
+      }
+    }
   }
 
   function disconnectRepository() {
-    setState((current) => ({ ...current, repository: undefined }));
+    setState((current) => ({ ...current, repository: undefined, accessToken: undefined }));
     setStatus("Disconnected repository");
   }
 
   function handleConnectGitHub() {
     if (appMetadata) {
       const state = encodeURIComponent(window.location.origin);
-      window.location.href = `${appMetadata.htmlUrl}/installations/new?state=${state}`;
+      window.location.href = `https://github.com/login/oauth/authorize?client_id=${appMetadata.clientId}&state=${state}`;
     }
   }
 
@@ -716,10 +759,10 @@ function CmsApplication() {
   );
 
   React.useEffect(() => {
-    if (state.accessToken && !state.repository && !state.availableRepositories) {
+    if (state.userToken && !state.repository && !state.availableRepositories) {
       loadRepositories();
     }
-  }, [state.accessToken, state.repository, state.availableRepositories]);
+  }, [state.userToken, state.repository, state.availableRepositories]);
 
   const location = useLocation();
   if (location.pathname === "/") {
@@ -741,7 +784,7 @@ function CmsApplication() {
               Ilm
             </div>
             <div>
-              <p className="text-sm font-semibold">Ilm CMS</p>
+              <p className="text-sm font-semibold">Ilm</p>
               <p className="text-xs text-zinc-500">Git-native publishing</p>
             </div>
           </div>
@@ -767,13 +810,29 @@ function CmsApplication() {
             <p className="mt-1 break-words">{state.repository?.fullName ?? "Not connected"}</p>
           </div>
         </aside>
-        <main className="min-w-0">
-          <div
-            role="status"
-            className="border-b border-zinc-200 bg-white px-6 py-2 text-sm text-zinc-700"
-          >
-            {status}
-          </div>
+        <main className="min-w-0 relative">
+          {status && status !== "Ready" && (
+            <div
+              role="status"
+              className="fixed bottom-6 right-6 z-50 rounded-lg bg-zinc-900 text-white px-4 py-3 text-sm shadow-2xl animate-fade-in-up max-w-md flex items-center gap-3 border border-zinc-800"
+            >
+              {status.toLowerCase().includes("failed") || status.toLowerCase().includes("error") ? (
+                <span className="text-red-400">⚠️</span>
+              ) : status.toLowerCase().includes("success") || status.toLowerCase().includes("connected") ? (
+                <span className="text-green-400">✓</span>
+              ) : (
+                <span className="text-blue-400">ℹ</span>
+              )}
+              <span className="flex-1">{status}</span>
+              <button 
+                onClick={() => setStatus("Ready")} 
+                className="text-zinc-400 hover:text-white transition-colors"
+                aria-label="Close"
+              >
+                ✕
+              </button>
+            </div>
+          )}
           <Routes>
             <Route
               path="/dashboard"
@@ -933,7 +992,7 @@ function Dashboard({
                 Change Repository
               </Button>
             </div>
-          ) : state.accessToken && state.availableRepositories ? (
+          ) : state.userToken && state.availableRepositories ? (
             <div className="mt-4">
               <label className="block text-sm font-medium text-zinc-700 mb-2">
                 Select your repository:

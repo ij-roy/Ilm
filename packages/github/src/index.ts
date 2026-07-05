@@ -28,6 +28,7 @@ export type GitHubRepositorySummary = {
   readonly fullName: string;
   readonly private: boolean;
   readonly defaultBranch: string;
+  readonly installationId?: number;
 };
 
 export type GitHubCommitResult = {
@@ -40,6 +41,31 @@ export class GitHubClient {
 
   constructor(accessToken: string) {
     this.octokit = new Octokit({ auth: accessToken });
+  }
+
+  static async listAvailableRepositories(userToken: string): Promise<GitHubRepositorySummary[]> {
+    const octokit = new Octokit({ auth: userToken });
+    const installationsRes = await octokit.apps.listInstallationsForAuthenticatedUser();
+
+    const allRepos: GitHubRepositorySummary[] = [];
+    for (const inst of installationsRes.data.installations) {
+      const reposRes = await octokit.apps.listInstallationReposForAuthenticatedUser({
+        installation_id: inst.id,
+        per_page: 100
+      });
+
+      const repos = reposRes.data.repositories.map((repo) => ({
+        id: repo.id,
+        name: repo.name,
+        fullName: repo.full_name,
+        private: repo.private,
+        defaultBranch: repo.default_branch,
+        installationId: inst.id
+      }));
+      allRepos.push(...repos);
+    }
+
+    return allRepos;
   }
 
   async listRepositories() {
