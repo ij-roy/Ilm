@@ -26,9 +26,7 @@ export function LandingPage({ onConnectGitHub }: { readonly onConnectGitHub: () 
           className={`transition-all duration-300 rounded-full px-4 md:px-6 py-3 flex items-center justify-between w-full max-w-5xl ${isScrolled ? "bg-black/40 backdrop-blur-xl shadow-[0_8px_32px_rgba(0,0,0,0.5)] border border-white/10" : "bg-transparent border border-transparent"}`}
         >
           <div className="flex items-center gap-3">
-            <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-cyan-400 to-purple-500 flex items-center justify-center font-bold text-black shadow-lg">
-              Ilm
-            </div>
+            <img src="/icon-192.png" alt="Ilm" className="h-8 w-8 rounded-lg shadow-lg object-cover" />
             <span className="font-semibold tracking-tight text-white hidden sm:block">Ilm</span>
           </div>
           <div className="hidden md:flex items-center gap-8 text-xs font-semibold tracking-wide uppercase text-zinc-400">
@@ -220,9 +218,7 @@ export function LandingPage({ onConnectGitHub }: { readonly onConnectGitHub: () 
       <footer className="border-t border-white/10 bg-black py-12 px-6">
         <div className="max-w-6xl mx-auto flex flex-col md:flex-row justify-between items-center gap-6">
           <div className="flex items-center gap-2">
-            <div className="h-6 w-6 rounded bg-gradient-to-br from-cyan-400 to-purple-500 flex items-center justify-center font-bold text-black text-xs">
-              Ilm
-            </div>
+            <img src="/icon-192.png" alt="Ilm" className="h-6 w-6 rounded object-cover shadow-sm" />
             <span className="font-semibold text-zinc-300">Ilm</span>
           </div>
 
