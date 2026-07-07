@@ -1,7 +1,7 @@
 ---
 import { getPublishedPosts } from "../../template/posts";
+import { getSeoConfigPath } from "../../template/posts";
 import { marked } from "marked";
-import { fileURLToPath } from "node:url";
 import { readFile } from "node:fs/promises";
 
 export async function getStaticPaths() {
@@ -19,8 +19,7 @@ let canonicalBaseUrl = "https://example.com";
 let googleSearchConsoleId: string | undefined = undefined;
 
 try {
-  const configPath = fileURLToPath(new URL("../../../../config/seo.ts", import.meta.url));
-  const content = await readFile(configPath, "utf-8");
+  const content = await readFile(getSeoConfigPath(), "utf-8");
   
   const gaMatch = content.match(/googleAnalyticsId:\s*["']([^"']+)["']/);
   if (gaMatch && gaMatch[1]) googleAnalyticsId = gaMatch[1];

@@ -138,6 +138,9 @@ async function handleGitHubAppCallback(
   const code = url.searchParams.get("code");
   const installationId = url.searchParams.get("installation_id");
   const setupAction = url.searchParams.get("setup_action");
+  const state = url.searchParams.get("state");
+  const oauthError = url.searchParams.get("error");
+  const oauthErrorDescription = url.searchParams.get("error_description");
 
   const redirectUrl = new URL(targetOrigin);
   redirectUrl.pathname = "/dashboard";
@@ -146,13 +149,30 @@ async function handleGitHubAppCallback(
     redirectUrl.searchParams.set("setup_action", setupAction);
   }
 
+  if (oauthError) {
+    const hashParams = new URLSearchParams();
+    hashParams.set("error", oauthError);
+    if (oauthErrorDescription) hashParams.set("error_description", oauthErrorDescription);
+    if (state) hashParams.set("state", state);
+    if (installationId) hashParams.set("installation_id", installationId);
+    redirectUrl.hash = hashParams.toString();
+    return Response.redirect(redirectUrl.toString(), 302);
+  }
+
   if (!code) {
-    if (installationId) redirectUrl.searchParams.set("installation_id", installationId);
+    const hashParams = new URLSearchParams();
+    hashParams.set("error", "missing_code");
+    if (installationId) hashParams.set("installation_id", installationId);
+    if (state) hashParams.set("state", state);
+    redirectUrl.hash = hashParams.toString();
     return Response.redirect(redirectUrl.toString(), 302);
   }
 
   if (!env.GITHUB_APP_PRIVATE_KEY || !env.GITHUB_CLIENT_SECRET) {
-    redirectUrl.searchParams.set("error", "missing_worker_secrets");
+    const hashParams = new URLSearchParams();
+    hashParams.set("error", "missing_worker_secrets");
+    if (state) hashParams.set("state", state);
+    redirectUrl.hash = hashParams.toString();
     return Response.redirect(redirectUrl.toString(), 302);
   }
 
@@ -179,6 +199,9 @@ async function handleGitHubAppCallback(
     if (installationId) {
       hashParams.set("installation_id", installationId);
     }
+    if (state) {
+      hashParams.set("state", state);
+    }
 
     if (!userToken) {
       hashParams.set("error", "auth_failed");
@@ -192,6 +215,7 @@ async function handleGitHubAppCallback(
   } catch {
     const hashParams = new URLSearchParams();
     hashParams.set("error", "callback_crash");
+    if (state) hashParams.set("state", state);
     redirectUrl.hash = hashParams.toString();
     return Response.redirect(redirectUrl.toString(), 302);
   }
@@ -324,8 +348,12 @@ async function handleGenerateInstallationToken(
       );
     }
 
-    const accessData = (await accessRes.json()) as { token: string };
-    return json({ token: accessData.token }, { status: 200 }, corsOrigin);
+    const accessData = (await accessRes.json()) as { token: string; expires_at?: string };
+    return json(
+      { token: accessData.token, expiresAt: accessData.expires_at },
+      { status: 200 },
+      corsOrigin
+    );
   } catch (err: unknown) {
     return json(
       { error: "Server error", details: (err as Error).message },
@@ -333,6 +361,67 @@ async function handleGenerateInstallationToken(
       corsOrigin
     );
   }
+}
+
+async function handleVerifyLiveUrl(request: Request, corsOrigin: string): Promise<Response> {
+  let body: { url?: string };
+  try {
+    body = (await request.json()) as { url?: string };
+  } catch {
+    return json({ error: "Invalid JSON body" }, { status: 400 }, corsOrigin);
+  }
+
+  if (!body.url) {
+    return json({ error: "Missing url" }, { status: 400 }, corsOrigin);
+  }
+
+  let target: URL;
+  try {
+    target = new URL(body.url);
+  } catch {
+    return json({ error: "Invalid url" }, { status: 400 }, corsOrigin);
+  }
+
+  if (!isAllowedLiveUrl(target)) {
+    return json(
+      { error: "Only HTTPS GitHub Pages URLs can be verified" },
+      { status: 400 },
+      corsOrigin
+    );
+  }
+
+  try {
+    const response = await fetch(target.toString(), {
+      method: "GET",
+      redirect: "follow"
+    });
+    return json(
+      {
+        reachable: response.ok,
+        status: response.status,
+        url: target.toString()
+      },
+      { status: 200 },
+      corsOrigin
+    );
+  } catch (err: unknown) {
+    return json(
+      {
+        reachable: false,
+        error: (err as Error).message,
+        url: target.toString()
+      },
+      { status: 200 },
+      corsOrigin
+    );
+  }
+}
+
+function isAllowedLiveUrl(url: URL): boolean {
+  return (
+    url.protocol === "https:" &&
+    (url.hostname === "github.io" || url.hostname.endsWith(".github.io"))
+  );
 }
 
 export default {
@@ -375,6 +464,10 @@ export default {
 
     if (url.pathname === "/github/app/installation-token" && request.method === "POST") {
       return handleGenerateInstallationToken(request, env, corsOrigin);
+    }
+
+    if (url.pathname === "/live-url/verify" && request.method === "POST") {
+      return handleVerifyLiveUrl(request, corsOrigin);
     }
 
     return json({ error: "Not Found" }, { status: 404 }, corsOrigin);

@@ -95,7 +95,7 @@ describe("@ilm/github-auth worker", () => {
     expect(response.status).toBe(401);
   });
 
-  it("redirects on callback route", async () => {
+  it("redirects on callback route and preserves state", async () => {
     const env: Env = {
       GITHUB_APP_ID: "12345",
       GITHUB_APP_PRIVATE_KEY: mockPrivateKeyPem,
@@ -121,15 +121,146 @@ describe("@ilm/github-auth worker", () => {
     vi.stubGlobal("fetch", mockFetch);
 
     const response = await worker.fetch(
-      new Request("https://auth.ilm.dev/github/app/callback?code=abc"),
+      new Request("https://auth.ilm.dev/github/app/callback?code=abc&state=nonce-123"),
+      env
+    );
+
+    expect(response.status).toBe(302);
+    const location = new URL(response.headers.get("Location") ?? "");
+    const hashParams = new URLSearchParams(location.hash.slice(1));
+    expect(`${location.origin}${location.pathname}`).toBe("http://localhost:5173/dashboard");
+    expect(hashParams.get("user_token")).toBe("user_token");
+    expect(hashParams.get("state")).toBe("nonce-123");
+
+    vi.unstubAllGlobals();
+  });
+
+  it("preserves OAuth cancellation errors in callback redirects", async () => {
+    const env: Env = {
+      GITHUB_APP_ID: "12345",
+      ALLOWED_ORIGIN: "http://localhost:5173"
+    };
+
+    const response = await worker.fetch(
+      new Request(
+        "https://auth.ilm.dev/github/app/callback?error=access_denied&error_description=The+user+cancelled&state=nonce-123"
+      ),
       env
     );
 
     expect(response.status).toBe(302);
     expect(response.headers.get("Location")).toBe(
-      "http://localhost:5173/dashboard#user_token=user_token"
+      "http://localhost:5173/dashboard#error=access_denied&error_description=The+user+cancelled&state=nonce-123"
+    );
+  });
+
+  it("returns installation token expiry", async () => {
+    const env: Env = {
+      GITHUB_APP_ID: "12345",
+      GITHUB_APP_PRIVATE_KEY: mockPrivateKeyPem,
+      ALLOWED_ORIGIN: "http://localhost:5173"
+    };
+
+    const mockFetch = vi.fn().mockImplementation((url: string) => {
+      if (url.includes("user/installations")) {
+        return Promise.resolve(new Response(JSON.stringify({ installations: [{ id: 9876 }] })));
+      }
+      if (url.includes("access_tokens")) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              token: "inst_token",
+              expires_at: "2026-07-08T10:00:00Z"
+            })
+          )
+        );
+      }
+      return Promise.resolve(new Response("{}"));
+    });
+    vi.stubGlobal("fetch", mockFetch);
+
+    const response = await worker.fetch(
+      new Request("https://auth.ilm.dev/github/app/installation-token", {
+        method: "POST",
+        headers: { Authorization: "Bearer user_token" },
+        body: JSON.stringify({ installationId: 9876 })
+      }),
+      env
     );
 
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      token: "inst_token",
+      expiresAt: "2026-07-08T10:00:00Z"
+    });
+
     vi.unstubAllGlobals();
+  });
+
+  it("rejects installation token requests for inaccessible installations", async () => {
+    const env: Env = {
+      GITHUB_APP_ID: "12345",
+      GITHUB_APP_PRIVATE_KEY: mockPrivateKeyPem,
+      ALLOWED_ORIGIN: "http://localhost:5173"
+    };
+
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValue(
+          new Response(JSON.stringify({ installations: [{ id: 1111 }] }), { status: 200 })
+        )
+    );
+
+    const response = await worker.fetch(
+      new Request("https://auth.ilm.dev/github/app/installation-token", {
+        method: "POST",
+        headers: { Authorization: "Bearer user_token" },
+        body: JSON.stringify({ installationId: 9876 })
+      }),
+      env
+    );
+
+    expect(response.status).toBe(403);
+    vi.unstubAllGlobals();
+  });
+
+  it("verifies reachable GitHub Pages live URLs", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response("", { status: 200 }))
+    );
+
+    const response = await worker.fetch(
+      new Request("https://auth.ilm.dev/live-url/verify", {
+        method: "POST",
+        body: JSON.stringify({ url: "https://owner.github.io/repo/posts/live-post/" })
+      }),
+      { GITHUB_APP_ID: "12345", ALLOWED_ORIGIN: "http://localhost:5173" }
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      reachable: true,
+      status: 200,
+      url: "https://owner.github.io/repo/posts/live-post/"
+    });
+    vi.unstubAllGlobals();
+  });
+
+  it("rejects unsafe live URL verification targets", async () => {
+    const response = await worker.fetch(
+      new Request("https://auth.ilm.dev/live-url/verify", {
+        method: "POST",
+        body: JSON.stringify({ url: "http://localhost:5173/posts/live-post/" })
+      }),
+      { GITHUB_APP_ID: "12345", ALLOWED_ORIGIN: "http://localhost:5173" }
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      error: "Only HTTPS GitHub Pages URLs can be verified"
+    });
   });
 });

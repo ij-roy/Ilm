@@ -193,7 +193,6 @@ export function validateRepositoryStructure(
     RepositoryLayout.siteConfig,
     RepositoryLayout.seoConfig,
     RepositoryLayout.navigationConfig,
-    RepositoryLayout.astroSite,
     RepositoryLayout.workflows
   ];
   const missing = required.filter((path) => !present.has(path));

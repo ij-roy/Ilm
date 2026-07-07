@@ -36,11 +36,14 @@ export type PublishPlan = {
 export type PublishProgressStage =
   | "idle"
   | "validating"
+  | "validating-site"
   | "uploading-media"
   | "creating-commit"
   | "pushing"
   | "building"
   | "deploying"
+  | "verifying-live-url"
+  | "live"
   | "published"
   | "failed";
 

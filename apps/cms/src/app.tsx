@@ -21,7 +21,11 @@ import {
   Heading2,
   Heading3,
   List,
-  ListOrdered
+  ListOrdered,
+  AlertTriangle,
+  GitBranch,
+  RefreshCw,
+  ShieldCheck
 } from "lucide-react";
 import { generateGeminiSuggestion, AiSuggestion, AiSuggestionKind } from "@ilm/ai";
 import { createGoogleOAuthUrl } from "@ilm/analytics";
@@ -36,7 +40,8 @@ import {
   GitHubClient,
   LocalGitHubClient,
   manifestToCommitRequest,
-  GitHubRepositorySummary
+  GitHubRepositorySummary,
+  GitHubPagesSite
 } from "@ilm/github";
 import { planMediaAsset, convertImageToWebP } from "@ilm/media";
 import {
@@ -104,6 +109,23 @@ type AppMetadata = {
   readonly htmlUrl: string;
 };
 
+type AuthSession = {
+  readonly userToken: string;
+  readonly installationId?: string;
+  readonly accessToken?: string;
+  readonly accessTokenExpiresAt?: string;
+};
+
+type AuthStatus =
+  | "signed-out"
+  | "loading-metadata"
+  | "connecting"
+  | "authenticated"
+  | "selecting-repo"
+  | "repo-connected"
+  | "expired"
+  | "error";
+
 type CmsState = {
   readonly repository?: ConnectedRepository;
   readonly availableRepositories?: readonly GitHubRepositorySummary[];
@@ -114,9 +136,8 @@ type CmsState = {
   readonly events: readonly PublishEvent[];
   readonly aiSuggestion?: AiSuggestion;
   readonly publishProgress?: PublishProgressStage;
-  readonly userToken?: string;
-  readonly accessToken?: string;
-  readonly installationId?: string;
+  readonly livePostUrl?: string;
+  readonly siteHomeUrl?: string;
   readonly geminiApiKey: string;
   readonly geminiEncryptedKey: string;
   readonly googleAnalyticsId: string;
@@ -314,6 +335,8 @@ async function decryptData(ciphertextBase64: string, passphrase: string): Promis
 }
 
 const storageKey = "ilm.cms.state.v1";
+const authSessionKey = "ilm.auth.session";
+const pendingAuthStateKey = "ilm.auth.pendingState";
 const defaultLocalGithubClient = new LocalGitHubClient();
 
 const initialDraft: DraftRecord = {
@@ -336,6 +359,8 @@ function createInitialState(): CmsState {
     posts: [],
     media: [],
     events: [],
+    livePostUrl: "",
+    siteHomeUrl: "",
     geminiApiKey: "",
     geminiEncryptedKey: "",
     googleAnalyticsId: "",
@@ -359,11 +384,72 @@ function readState(): CmsState {
       posts: parsed.posts ?? [],
       media: parsed.media ?? [],
       events: parsed.events ?? [],
+      livePostUrl: parsed.livePostUrl ?? "",
+      siteHomeUrl: parsed.siteHomeUrl ?? "",
       siteUrl: parsed.siteUrl ?? ""
     };
   } catch {
     return createInitialState();
   }
+}
+
+function readAuthSession(): AuthSession | undefined {
+  if (typeof window === "undefined") return undefined;
+  const stored = window.sessionStorage.getItem(authSessionKey);
+  if (!stored) return undefined;
+
+  try {
+    const parsed = JSON.parse(stored) as AuthSession;
+    return parsed.userToken ? parsed : undefined;
+  } catch {
+    window.sessionStorage.removeItem(authSessionKey);
+    return undefined;
+  }
+}
+
+function writeAuthSession(session: AuthSession | undefined) {
+  if (typeof window === "undefined") return;
+  if (!session) {
+    window.sessionStorage.removeItem(authSessionKey);
+    return;
+  }
+  window.sessionStorage.setItem(authSessionKey, JSON.stringify(session));
+}
+
+function isExpired(expiresAt?: string): boolean {
+  if (!expiresAt) return false;
+  return new Date(expiresAt).getTime() <= Date.now();
+}
+
+function createAuthNonce(): string {
+  const bytes = window.crypto.getRandomValues(new Uint8Array(16));
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function describeAuthError(error: string, description?: string): string {
+  if (error === "access_denied") return "GitHub connection cancelled";
+  if (error === "missing_worker_secrets") return "GitHub authentication is not configured.";
+  if (error === "missing_code") return "GitHub did not return an authorization code.";
+  if (description) return description;
+  return `GitHub connection failed: ${error}`;
+}
+
+function sanitizeCmsStateForStorage(state: CmsState): CmsState {
+  const {
+    // Drop legacy persisted token fields from older localStorage payloads.
+    userToken: _userToken,
+    accessToken: _accessToken,
+    installationId: _installationId,
+    ...safeState
+  } = state as CmsState & {
+    readonly userToken?: string;
+    readonly accessToken?: string;
+    readonly installationId?: string;
+  };
+  void _userToken;
+  void _accessToken;
+  void _installationId;
+  return safeState;
 }
 
 export function App() {
@@ -377,6 +463,11 @@ export function App() {
 
 function CmsApplication() {
   const [state, setState] = React.useState<CmsState>(() => readState());
+  const [authSession, setAuthSession] = React.useState<AuthSession | undefined>(() =>
+    readAuthSession()
+  );
+  const [authMessage, setAuthMessage] = React.useState<string>("");
+  const [repositoriesLoading, setRepositoriesLoading] = React.useState(false);
   const [status, setStatus] = React.useState("Ready");
 
   React.useEffect(() => {
@@ -395,18 +486,29 @@ function CmsApplication() {
   }, [status]);
 
   React.useEffect(() => {
-    window.localStorage.setItem(storageKey, JSON.stringify(state));
+    window.localStorage.setItem(storageKey, JSON.stringify(sanitizeCmsStateForStorage(state)));
   }, [state]);
 
+  React.useEffect(() => {
+    writeAuthSession(authSession);
+  }, [authSession]);
+
   const activeGithubClient = React.useMemo(() => {
-    return state.accessToken ? new GitHubClient(state.accessToken) : defaultLocalGithubClient;
-  }, [state.accessToken]);
+    return authSession?.accessToken && !isExpired(authSession.accessTokenExpiresAt)
+      ? new GitHubClient(authSession.accessToken)
+      : defaultLocalGithubClient;
+  }, [authSession?.accessToken, authSession?.accessTokenExpiresAt]);
 
   const [appMetadata, setAppMetadata] = React.useState<AppMetadata | null>(null);
+  const [metadataLoading, setMetadataLoading] = React.useState(true);
 
   React.useEffect(() => {
     const workerUrl = import.meta.env.VITE_GITHUB_AUTH_WORKER_URL;
-    if (!workerUrl) return;
+    if (!workerUrl) {
+      setMetadataLoading(false);
+      setAuthMessage("Could not load GitHub App metadata");
+      return;
+    }
 
     fetch(`${workerUrl}/github/app/metadata`)
       .then(async (res) => {
@@ -420,14 +522,19 @@ function CmsApplication() {
       })
       .then((meta) => {
         setAppMetadata(meta);
+        setAuthMessage("");
       })
       .catch((err: unknown) => {
+        setAuthMessage("Could not load GitHub App metadata");
         if (typeof process === "undefined" || process.env.NODE_ENV !== "test") {
           console.warn(
             "Could not load GitHub App metadata:",
             (err as Error).message || String(err)
           );
         }
+      })
+      .finally(() => {
+        setMetadataLoading(false);
       });
   }, []);
 
@@ -439,24 +546,42 @@ function CmsApplication() {
     const installationId = hashParams.get("installation_id") || queryParams.get("installation_id");
     const userToken = hashParams.get("user_token") || queryParams.get("user_token");
     const errorMsg = hashParams.get("error") || queryParams.get("error");
+    const errorDescription =
+      hashParams.get("error_description") || queryParams.get("error_description") || undefined;
+    const returnedState = hashParams.get("state") || queryParams.get("state");
     const setupAction = hashParams.get("setup_action") || queryParams.get("setup_action");
 
     if (errorMsg) {
-      setStatus(`GitHub connection failed: ${errorMsg}`);
-      addEvent("auth", `Auth error: ${errorMsg}`);
+      const message = describeAuthError(errorMsg, errorDescription);
+      setAuthMessage(message);
+      setStatus(message);
+      addEvent("auth", `Auth error: ${message}`);
+      window.sessionStorage.removeItem(pendingAuthStateKey);
+      window.history.replaceState({}, document.title, window.location.pathname);
     } else if (userToken) {
-      setState((current) => ({
-        ...current,
-        userToken: userToken,
-        installationId: installationId || current.installationId
-      }));
+      const expectedState = window.sessionStorage.getItem(pendingAuthStateKey);
+      if (!expectedState || returnedState !== expectedState) {
+        setAuthMessage("GitHub session could not be verified.");
+        setStatus("GitHub session could not be verified.");
+        window.sessionStorage.removeItem(pendingAuthStateKey);
+        window.history.replaceState({}, document.title, window.location.pathname);
+        return;
+      }
+
+      const nextSession: AuthSession = {
+        userToken,
+        installationId: installationId || authSession?.installationId
+      };
+      setAuthSession(nextSession);
+      window.sessionStorage.removeItem(pendingAuthStateKey);
+      setAuthMessage("");
       setStatus("GitHub connected successfully!");
       addEvent("auth", `Authenticated user`);
 
       if (setupAction === "update") {
         // Automatically reload repositories if the user just updated their installation
         setStatus("Refreshing repositories...");
-        setTimeout(() => loadRepositories(), 500);
+        setTimeout(() => loadRepositories(userToken), 500);
       }
 
       // Completely clear query string and hash from the URL
@@ -538,13 +663,39 @@ function CmsApplication() {
     );
   }, [repoEntries]);
 
+  const staticSiteReady = Boolean(state.repository && hasFrontend);
+
+  React.useEffect(() => {
+    if (!state.repository || !hasFrontend) return;
+
+    activeGithubClient
+      .getPagesSite(state.repository)
+      .then((site) => {
+        if (!site?.htmlUrl) return;
+        setState((current) => ({
+          ...current,
+          siteHomeUrl: site.htmlUrl,
+          siteUrl: current.siteUrl || site.htmlUrl
+        }));
+      })
+      .catch((err: unknown) => {
+        setStatus(`Repository needs Pages permission: ${(err as Error).message}`);
+      });
+  }, [state.repository, hasFrontend, activeGithubClient]);
+
   async function initializeTemplate() {
     if (!state.repository) return;
     setState((c) => ({ ...c, isInitializingTemplate: true }));
-    setStatus("Fetching template from Ilm... Committing to your repository...");
+    setStatus("Setting up your static blog site...");
     try {
       const result = await activeGithubClient.initializeAstroTemplate(state.repository);
-      setStatus(`Template initialized successfully at ${result.sha}`);
+      const site = await activeGithubClient.ensurePagesSite(state.repository);
+      setState((current) => ({
+        ...current,
+        siteHomeUrl: site.htmlUrl,
+        siteUrl: current.siteUrl || site.htmlUrl
+      }));
+      setStatus(`Static blog site ready at ${result.sha}`);
       addEvent("repository", "Initialized Astro template");
 
       const entries = await activeGithubClient.getRepositoryEntries(state.repository);
@@ -566,14 +717,46 @@ function CmsApplication() {
     }));
   }
 
-  async function loadRepositories() {
+  async function loadRepositories(userToken = authSession?.userToken) {
     try {
-      if (!state.userToken) throw new Error("Not authenticated");
-      const repositories = await GitHubClient.listAvailableRepositories(state.userToken);
+      if (!userToken) throw new Error("Not authenticated");
+      setRepositoriesLoading(true);
+      setAuthMessage("");
+      const repositories = await GitHubClient.listAvailableRepositories(userToken);
       setState((curr) => ({ ...curr, availableRepositories: repositories }));
+      if (repositories.length === 0) {
+        setAuthMessage("No repositories available. Configure GitHub App permissions.");
+      }
     } catch (err: unknown) {
-      setStatus(`Failed to load repositories: ${(err as Error).message}`);
+      const message = `Failed to load repositories: ${(err as Error).message}`;
+      setAuthMessage(message);
+      setStatus(message);
+    } finally {
+      setRepositoriesLoading(false);
     }
+  }
+
+  async function requestInstallationToken(installationId: number | string): Promise<{
+    readonly token: string;
+    readonly expiresAt?: string;
+  }> {
+    if (!authSession?.userToken) throw new Error("Not authenticated");
+    const workerUrl = import.meta.env.VITE_GITHUB_AUTH_WORKER_URL;
+    if (!workerUrl) throw new Error("Could not load GitHub App metadata");
+
+    const res = await fetch(`${workerUrl}/github/app/installation-token`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${authSession.userToken}`
+      },
+      body: JSON.stringify({ installationId: Number(installationId) })
+    });
+    if (!res.ok) {
+      const errData = await res.json().catch(() => null);
+      throw new Error(errData?.error || "Failed to fetch installation token");
+    }
+    return (await res.json()) as { token: string; expiresAt?: string };
   }
 
   async function selectRepository(repoId: number) {
@@ -592,49 +775,84 @@ function CmsApplication() {
     setStatus(`Connected ${repository.fullName}. Fetching access token...`);
     addEvent("repository", `Connected ${repository.fullName}`);
 
-    if (repository.installationId && state.userToken) {
+    if (repository.installationId && authSession?.userToken) {
       try {
-        const workerUrl = import.meta.env.VITE_GITHUB_AUTH_WORKER_URL;
-        const res = await fetch(`${workerUrl}/github/app/installation-token`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${state.userToken}`
-          },
-          body: JSON.stringify({ installationId: repository.installationId })
-        });
-        if (!res.ok) {
-          const errData = await res.json().catch(() => null);
-          throw new Error(errData?.error || "Failed to fetch installation token");
-        }
-        const data = await res.json();
-        setState((current) => ({
-          ...current,
-          accessToken: data.token,
-          installationId: String(repository.installationId)
-        }));
+        const data = await requestInstallationToken(repository.installationId);
+        setAuthSession((current) =>
+          current
+            ? {
+                ...current,
+                accessToken: data.token,
+                accessTokenExpiresAt: data.expiresAt,
+                installationId: String(repository.installationId)
+              }
+            : current
+        );
+        setAuthMessage("");
         setStatus(`Ready to edit ${repository.fullName}`);
       } catch (err) {
-        setStatus(`Failed to fetch access token: ${(err as Error).message}`);
+        const message = `Failed to fetch access token: ${(err as Error).message}`;
+        setAuthMessage(message);
+        setStatus(message);
       }
     }
   }
 
+  async function refreshAccessToken() {
+    if (!authSession?.installationId) {
+      setAuthMessage("Repository access not granted");
+      return;
+    }
+
+    try {
+      const data = await requestInstallationToken(authSession.installationId);
+      setAuthSession((current) =>
+        current
+          ? {
+              ...current,
+              accessToken: data.token,
+              accessTokenExpiresAt: data.expiresAt
+            }
+          : current
+      );
+      setAuthMessage("");
+      setStatus("GitHub access refreshed.");
+    } catch (err: unknown) {
+      const message = `Failed to refresh access: ${(err as Error).message}`;
+      setAuthMessage(message);
+      setStatus(message);
+    }
+  }
+
   function disconnectRepository() {
-    setState((current) => ({ ...current, repository: undefined, accessToken: undefined }));
-    setStatus("Disconnected repository");
+    setAuthSession(undefined);
+    setState((current) => ({
+      ...current,
+      repository: undefined,
+      availableRepositories: undefined
+    }));
+    setAuthMessage("");
+    setStatus("Disconnected GitHub");
   }
 
   function handleConnectGitHub() {
     if (appMetadata) {
-      const state = encodeURIComponent(window.location.origin);
-      window.location.href = `https://github.com/login/oauth/authorize?client_id=${appMetadata.clientId}&state=${state}`;
+      const nonce = createAuthNonce();
+      window.sessionStorage.setItem(pendingAuthStateKey, nonce);
+      setAuthMessage("");
+      setStatus("Connecting to GitHub...");
+      window.location.href = `https://github.com/login/oauth/authorize?client_id=${appMetadata.clientId}&state=${encodeURIComponent(nonce)}`;
+    } else {
+      setAuthMessage("Could not load GitHub App metadata");
     }
   }
 
   function handleConfigureRepositories() {
-    if (state.installationId) {
-      window.open(`https://github.com/settings/installations/${state.installationId}`, "_blank");
+    if (authSession?.installationId) {
+      window.open(
+        `https://github.com/settings/installations/${authSession.installationId}`,
+        "_blank"
+      );
     } else if (appMetadata) {
       window.open(appMetadata.htmlUrl, "_blank");
     }
@@ -822,9 +1040,32 @@ function CmsApplication() {
     addEvent("draft", `Saved ${plan.value.draftPath}`);
   }
 
+  function createLivePostUrl(siteHomeUrl: string, slug: string): string {
+    return `${siteHomeUrl.replace(/\/$/, "")}/posts/${generateSlug(slug)}/`;
+  }
+
+  async function verifyLiveUrl(url: string): Promise<boolean> {
+    const workerUrl = import.meta.env.VITE_GITHUB_AUTH_WORKER_URL;
+    if (!workerUrl) return true;
+
+    const response = await fetch(`${workerUrl}/live-url/verify`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url })
+    });
+    if (!response.ok) return false;
+    const data = (await response.json()) as { reachable?: boolean };
+    return Boolean(data.reachable);
+  }
+
   async function publishPost() {
     if (!state.repository) {
       setStatus("Connect a repository before publishing.");
+      return;
+    }
+
+    if (!staticSiteReady) {
+      setStatus("Set up your blog site before publishing.");
       return;
     }
 
@@ -851,6 +1092,23 @@ function CmsApplication() {
     const valid = validatePublishPlan(plan.value);
     if (!valid.ok) {
       setStatus(valid.error.message);
+      return;
+    }
+
+    setState((c) => ({ ...c, publishProgress: "validating-site" }));
+    setStatus("Validating static site setup...");
+
+    let pagesSite: GitHubPagesSite;
+    try {
+      pagesSite = await activeGithubClient.ensurePagesSite(state.repository);
+      setState((current) => ({
+        ...current,
+        siteHomeUrl: pagesSite.htmlUrl,
+        siteUrl: current.siteUrl || pagesSite.htmlUrl
+      }));
+    } catch (err: unknown) {
+      setState((c) => ({ ...c, publishProgress: "failed" }));
+      setStatus(`Repository needs Pages permission: ${(err as Error).message}`);
       return;
     }
 
@@ -882,11 +1140,33 @@ function CmsApplication() {
       await new Promise((res) => setTimeout(res, 2000));
 
       try {
-        const status = await activeGithubClient.getWorkflowStatus(state.repository);
+        const status = await activeGithubClient.getWorkflowStatusForCommit(
+          state.repository,
+          result.sha
+        );
         if (status === "completed") {
-          setState((c) => ({ ...c, publishProgress: "published" }));
-          setStatus("Published successfully!");
-          addEvent("publish", "GitHub Pages deployment completed");
+          setState((c) => ({ ...c, publishProgress: "verifying-live-url" }));
+          setStatus("Verifying live post URL...");
+          const livePostUrl = createLivePostUrl(pagesSite.htmlUrl, state.activeDraft.slug);
+          const reachable = await verifyLiveUrl(livePostUrl);
+          if (reachable) {
+            setState((c) => ({
+              ...c,
+              publishProgress: "live",
+              livePostUrl,
+              siteHomeUrl: pagesSite.htmlUrl
+            }));
+            setStatus("Live post verified.");
+            addEvent("publish", "Live post verified on GitHub Pages");
+          } else {
+            setState((c) => ({
+              ...c,
+              publishProgress: "failed",
+              livePostUrl,
+              siteHomeUrl: pagesSite.htmlUrl
+            }));
+            setStatus("Deployed, but live URL is not reachable yet.");
+          }
           break;
         } else if (status === "failed") {
           setState((c) => ({ ...c, publishProgress: "failed" }));
@@ -915,11 +1195,34 @@ function CmsApplication() {
     state.activeDraft.savedSha ? state.activeDraft.updatedAt : undefined
   );
 
+  const authStatus: AuthStatus = React.useMemo(() => {
+    if (!authSession?.userToken) return "signed-out";
+    if (authSession.accessToken && isExpired(authSession.accessTokenExpiresAt)) return "expired";
+    if (state.repository && authSession.accessToken) return "repo-connected";
+    if (authMessage) return "error";
+    if (metadataLoading) return "loading-metadata";
+    if (repositoriesLoading) return "selecting-repo";
+    if (state.availableRepositories) return "selecting-repo";
+    return "authenticated";
+  }, [
+    authMessage,
+    metadataLoading,
+    authSession?.userToken,
+    authSession?.accessToken,
+    authSession?.accessTokenExpiresAt,
+    state.repository,
+    state.availableRepositories,
+    repositoriesLoading
+  ]);
+
+  const isAuthenticated = Boolean(authSession?.userToken) && authStatus !== "expired";
+  const repositoryConnected = authStatus === "repo-connected";
+
   React.useEffect(() => {
-    if (state.userToken && !state.repository && !state.availableRepositories) {
-      loadRepositories();
+    if (authSession?.userToken && !state.repository && !state.availableRepositories) {
+      loadRepositories(authSession.userToken);
     }
-  }, [state.userToken, state.repository, state.availableRepositories]);
+  }, [authSession?.userToken, state.repository, state.availableRepositories]);
 
   const location = useLocation();
   if (location.pathname === "/") {
@@ -974,12 +1277,12 @@ function CmsApplication() {
               className="fixed bottom-6 right-6 z-50 rounded-lg bg-zinc-900 text-white px-4 py-3 text-sm shadow-2xl animate-fade-in-up max-w-md flex items-center gap-3 border border-zinc-800"
             >
               {status.toLowerCase().includes("failed") || status.toLowerCase().includes("error") ? (
-                <span className="text-red-400">⚠️</span>
+                <AlertTriangle className="h-4 w-4 text-red-400" />
               ) : status.toLowerCase().includes("success") ||
                 status.toLowerCase().includes("connected") ? (
-                <span className="text-green-400">✓</span>
+                <CheckCircle2 className="h-4 w-4 text-green-400" />
               ) : (
-                <span className="text-blue-400">ℹ</span>
+                <ShieldCheck className="h-4 w-4 text-blue-400" />
               )}
               <span className="flex-1">{status}</span>
               <button
@@ -987,7 +1290,7 @@ function CmsApplication() {
                 className="text-zinc-400 hover:text-white transition-colors"
                 aria-label="Close"
               >
-                ✕
+                <span aria-hidden="true">x</span>
               </button>
             </div>
           )}
@@ -998,9 +1301,16 @@ function CmsApplication() {
                 <Dashboard
                   state={state}
                   status={status}
+                  authStatus={authStatus}
+                  authMessage={authMessage}
+                  authSession={authSession}
+                  appMetadataLoaded={Boolean(appMetadata)}
+                  repositoriesLoading={repositoriesLoading}
                   seoScore={seoScore}
                   repositoryValid={repositoryValidation.ok}
                   onConnect={handleConnectGitHub}
+                  onLoadRepositories={() => loadRepositories()}
+                  onRefreshAccess={refreshAccessToken}
                   onSelectRepository={selectRepository}
                   onDisconnectRepository={disconnectRepository}
                   onConfigureRepositories={handleConfigureRepositories}
@@ -1010,70 +1320,158 @@ function CmsApplication() {
             <Route
               path="/editor"
               element={
-                <EditorPage
-                  draft={state.activeDraft}
-                  seoScore={seoScore}
-                  seoMetadata={seo}
-                  outline={outline}
-                  readingTime={estimateReadingTimeMinutes(state.activeDraft.markdown)}
-                  aiSuggestion={state.aiSuggestion}
-                  localRecoveryAvailable={localRecoveryAvailable}
-                  connected={!!state.repository}
-                  onChange={updateDraft}
-                  onGenerateSlug={generateSlugFromTitle}
-                  onSuggest={createAiSuggestion}
-                  onApproveSuggestion={approveAiSuggestion}
-                  onSaveDraft={saveDraft}
-                  onPublish={publishPost}
-                  onAddMedia={addMedia}
-                />
+                repositoryConnected ? (
+                  <EditorPage
+                    draft={state.activeDraft}
+                    seoScore={seoScore}
+                    seoMetadata={seo}
+                    outline={outline}
+                    readingTime={estimateReadingTimeMinutes(state.activeDraft.markdown)}
+                    aiSuggestion={state.aiSuggestion}
+                    publishProgress={state.publishProgress}
+                    localRecoveryAvailable={localRecoveryAvailable}
+                    connected={repositoryConnected}
+                    staticSiteReady={staticSiteReady}
+                    isInitializingTemplate={state.isInitializingTemplate}
+                    livePostUrl={state.livePostUrl}
+                    siteHomeUrl={state.siteHomeUrl}
+                    onInitializeTemplate={initializeTemplate}
+                    onChange={updateDraft}
+                    onGenerateSlug={generateSlugFromTitle}
+                    onSuggest={createAiSuggestion}
+                    onApproveSuggestion={approveAiSuggestion}
+                    onSaveDraft={saveDraft}
+                    onPublish={publishPost}
+                    onAddMedia={addMedia}
+                  />
+                ) : (
+                  <AuthRequiredPage
+                    pageName="Editor"
+                    authStatus={authStatus}
+                    authMessage={authMessage}
+                    onConnect={handleConnectGitHub}
+                    onConfigureRepositories={handleConfigureRepositories}
+                    onRefreshAccess={refreshAccessToken}
+                  />
+                )
               }
             />
             <Route
               path="/posts"
               element={
-                <ListPage title="Posts" items={state.posts} connected={!!state.repository} />
+                repositoryConnected ? (
+                  <ListPage title="Posts" items={state.posts} connected={repositoryConnected} />
+                ) : (
+                  <AuthRequiredPage
+                    pageName="Posts"
+                    authStatus={authStatus}
+                    authMessage={authMessage}
+                    onConnect={handleConnectGitHub}
+                    onConfigureRepositories={handleConfigureRepositories}
+                    onRefreshAccess={refreshAccessToken}
+                  />
+                )
               }
             />
             <Route
               path="/drafts"
               element={
-                <ListPage title="Drafts" items={state.drafts} connected={!!state.repository} />
+                repositoryConnected ? (
+                  <ListPage title="Drafts" items={state.drafts} connected={repositoryConnected} />
+                ) : (
+                  <AuthRequiredPage
+                    pageName="Drafts"
+                    authStatus={authStatus}
+                    authMessage={authMessage}
+                    onConnect={handleConnectGitHub}
+                    onConfigureRepositories={handleConfigureRepositories}
+                    onRefreshAccess={refreshAccessToken}
+                  />
+                )
               }
             />
             <Route
               path="/media"
               element={
-                <MediaPage media={state.media} onAdd={addMedia} connected={!!state.repository} />
+                repositoryConnected ? (
+                  <MediaPage media={state.media} onAdd={addMedia} connected={repositoryConnected} />
+                ) : (
+                  <AuthRequiredPage
+                    pageName="Media"
+                    authStatus={authStatus}
+                    authMessage={authMessage}
+                    onConnect={handleConnectGitHub}
+                    onConfigureRepositories={handleConfigureRepositories}
+                    onRefreshAccess={refreshAccessToken}
+                  />
+                )
               }
             />
             <Route
               path="/search"
               element={
-                <SearchPage
-                  posts={state.posts}
-                  drafts={state.drafts}
-                  connected={!!state.repository}
-                />
+                repositoryConnected ? (
+                  <SearchPage
+                    posts={state.posts}
+                    drafts={state.drafts}
+                    connected={repositoryConnected}
+                  />
+                ) : (
+                  <AuthRequiredPage
+                    pageName="Search"
+                    authStatus={authStatus}
+                    authMessage={authMessage}
+                    onConnect={handleConnectGitHub}
+                    onConfigureRepositories={handleConfigureRepositories}
+                    onRefreshAccess={refreshAccessToken}
+                  />
+                )
               }
             />
-            <Route path="/analytics" element={<AnalyticsPage />} />
+            <Route
+              path="/analytics"
+              element={
+                repositoryConnected ? (
+                  <AnalyticsPage />
+                ) : (
+                  <AuthRequiredPage
+                    pageName="Analytics"
+                    authStatus={authStatus}
+                    authMessage={authMessage}
+                    onConnect={handleConnectGitHub}
+                    onConfigureRepositories={handleConfigureRepositories}
+                    onRefreshAccess={refreshAccessToken}
+                  />
+                )
+              }
+            />
             <Route
               path="/settings"
               element={
-                <SettingsPage
-                  repository={state.repository}
-                  geminiApiKey={state.geminiApiKey || ""}
-                  geminiEncrypted={Boolean(state.geminiEncryptedKey)}
-                  googleAnalyticsId={state.googleAnalyticsId}
-                  siteUrl={state.siteUrl}
-                  hasFrontend={hasFrontend}
-                  isInitializingTemplate={state.isInitializingTemplate}
-                  onSaveGeminiKey={handleSaveGeminiKey}
-                  onClearGeminiKey={handleClearGeminiKey}
-                  onSaveSiteUrl={(url) => setState((curr) => ({ ...curr, siteUrl: url }))}
-                  onInitializeTemplate={initializeTemplate}
-                />
+                isAuthenticated ? (
+                  <SettingsPage
+                    repository={state.repository}
+                    geminiApiKey={state.geminiApiKey || ""}
+                    geminiEncrypted={Boolean(state.geminiEncryptedKey)}
+                    googleAnalyticsId={state.googleAnalyticsId}
+                    siteUrl={state.siteUrl}
+                    hasFrontend={hasFrontend}
+                    isInitializingTemplate={state.isInitializingTemplate}
+                    onSaveGeminiKey={handleSaveGeminiKey}
+                    onClearGeminiKey={handleClearGeminiKey}
+                    onSaveSiteUrl={(url) => setState((curr) => ({ ...curr, siteUrl: url }))}
+                    onInitializeTemplate={initializeTemplate}
+                  />
+                ) : (
+                  <AuthRequiredPage
+                    pageName="Settings"
+                    authStatus={authStatus}
+                    authMessage={authMessage}
+                    onConnect={handleConnectGitHub}
+                    onConfigureRepositories={handleConfigureRepositories}
+                    onRefreshAccess={refreshAccessToken}
+                  />
+                )
               }
             />
           </Routes>
@@ -1101,18 +1499,32 @@ function PageHeader({
 function Dashboard({
   state,
   status,
+  authStatus,
+  authMessage,
+  authSession,
+  appMetadataLoaded,
+  repositoriesLoading,
   seoScore,
   repositoryValid,
   onConnect,
+  onLoadRepositories,
+  onRefreshAccess,
   onSelectRepository,
   onDisconnectRepository,
   onConfigureRepositories
 }: {
   readonly state: CmsState;
   readonly status: string;
+  readonly authStatus: AuthStatus;
+  readonly authMessage: string;
+  readonly authSession?: AuthSession;
+  readonly appMetadataLoaded: boolean;
+  readonly repositoriesLoading: boolean;
   readonly seoScore: number;
   readonly repositoryValid: boolean;
   readonly onConnect: () => void;
+  readonly onLoadRepositories: () => void;
+  readonly onRefreshAccess: () => void;
   readonly onSelectRepository: (repoId: number) => void;
   readonly onDisconnectRepository: () => void;
   readonly onConfigureRepositories: () => void;
@@ -1172,29 +1584,163 @@ function Dashboard({
             )}
           </div>
         </div>
-        <div className="rounded-md border border-zinc-200 bg-white p-5">
-          <h2 className="text-lg font-semibold">Repository connection</h2>
-          <p className="mt-2 text-sm text-zinc-600">
-            Connect your GitHub repository to start publishing. Ilm securely stores all your content
-            directly in your repository, so you retain 100% ownership of your data.
-          </p>
-          {state.repository ? (
-            <div className="mt-4 rounded-md border border-green-200 bg-green-50 p-3">
-              <p className="text-sm font-medium text-green-900">
-                Connected to {state.repository.fullName}
-              </p>
-              <Button type="button" className="mt-3" onClick={onDisconnectRepository}>
-                Change Repository
-              </Button>
+        <AuthSetupPanel
+          authStatus={authStatus}
+          authMessage={authMessage}
+          authSession={authSession}
+          appMetadataLoaded={appMetadataLoaded}
+          repositories={state.availableRepositories}
+          repository={state.repository}
+          repositoriesLoading={repositoriesLoading}
+          onConnect={onConnect}
+          onLoadRepositories={onLoadRepositories}
+          onSelectRepository={onSelectRepository}
+          onRefreshAccess={onRefreshAccess}
+          onDisconnectRepository={onDisconnectRepository}
+          onConfigureRepositories={onConfigureRepositories}
+        />
+      </section>
+    </>
+  );
+}
+
+function AuthSetupPanel({
+  authStatus,
+  authMessage,
+  authSession,
+  appMetadataLoaded,
+  repositories,
+  repository,
+  repositoriesLoading,
+  onConnect,
+  onLoadRepositories,
+  onSelectRepository,
+  onRefreshAccess,
+  onDisconnectRepository,
+  onConfigureRepositories
+}: {
+  readonly authStatus: AuthStatus;
+  readonly authMessage: string;
+  readonly authSession?: AuthSession;
+  readonly appMetadataLoaded: boolean;
+  readonly repositories?: readonly GitHubRepositorySummary[];
+  readonly repository?: ConnectedRepository;
+  readonly repositoriesLoading: boolean;
+  readonly onConnect: () => void;
+  readonly onLoadRepositories: () => void;
+  readonly onSelectRepository: (repoId: number) => void;
+  readonly onRefreshAccess: () => void;
+  readonly onDisconnectRepository: () => void;
+  readonly onConfigureRepositories: () => void;
+}) {
+  const expiryLabel = authSession?.accessTokenExpiresAt
+    ? new Date(authSession.accessTokenExpiresAt).toLocaleString()
+    : "Session-only";
+
+  return (
+    <section className="overflow-hidden rounded-md border border-slate-200 bg-white shadow-sm">
+      <div className="bg-slate-950 p-5 text-white">
+        <div className="flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-md bg-emerald-400 text-slate-950">
+            <ShieldCheck className="h-5 w-5" />
+          </div>
+          <div>
+            <h2 className="text-lg font-semibold">Connect GitHub</h2>
+            <p className="text-sm text-slate-300">
+              Connect GitHub → Select Repository → Ready to Publish
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid gap-0 lg:grid-cols-[170px_1fr]">
+        <ol className="space-y-4 border-b border-slate-200 bg-slate-50 p-5 lg:border-b-0 lg:border-r">
+          <SetupStep
+            icon={<KeyRound className="h-4 w-4" />}
+            label="GitHub"
+            active={!authSession}
+            complete={Boolean(authSession)}
+          />
+          <SetupStep
+            icon={<FolderGit2 className="h-4 w-4" />}
+            label="Repository"
+            active={Boolean(authSession) && !repository}
+            complete={Boolean(repository)}
+          />
+          <SetupStep
+            icon={<GitBranch className="h-4 w-4" />}
+            label="Publish"
+            active={Boolean(repository)}
+            complete={authStatus === "repo-connected"}
+          />
+        </ol>
+
+        <div className="p-5">
+          {authMessage && (
+            <div className="mb-4 flex gap-3 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">
+              <AlertTriangle className="mt-0.5 h-4 w-4 flex-none" />
+              <span>{authMessage}</span>
             </div>
-          ) : state.userToken && state.availableRepositories ? (
-            <div className="mt-4">
-              <label className="block text-sm font-medium text-zinc-700 mb-2">
-                Select your repository:
-              </label>
-              <div className="flex gap-2">
+          )}
+
+          {authStatus === "loading-metadata" ? (
+            <div className="rounded-md border border-slate-200 bg-slate-50 p-4">
+              <p className="text-sm font-medium text-slate-900">Preparing GitHub connection...</p>
+              <p className="mt-1 text-sm text-slate-600">
+                Loading GitHub App details for a repository-scoped connection.
+              </p>
+            </div>
+          ) : authStatus === "expired" ? (
+            <div>
+              <p className="text-sm font-semibold text-slate-900">
+                Session expired. Reconnect to continue.
+              </p>
+              <p className="mt-1 text-sm text-slate-600">
+                Your GitHub installation token is no longer active. Refresh access to keep working.
+              </p>
+              <div className="mt-4 flex flex-wrap gap-2">
+                <Button type="button" onClick={onRefreshAccess}>
+                  <RefreshCw className="h-4 w-4" /> Refresh access
+                </Button>
+                <Button type="button" variant="ghost" onClick={onConnect}>
+                  Reconnect GitHub
+                </Button>
+              </div>
+            </div>
+          ) : repository ? (
+            <div className="space-y-4">
+              <div className="rounded-md border border-emerald-200 bg-emerald-50 p-4">
+                <p className="text-sm font-semibold text-emerald-950">
+                  Connected to {repository.fullName}
+                </p>
+                <dl className="mt-3 space-y-2 text-sm">
+                  <Metric label="Branch" value={repository.branch} />
+                  <Metric label="Access" value={expiryLabel} />
+                </dl>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button type="button" onClick={onRefreshAccess} variant="secondary">
+                  <RefreshCw className="h-4 w-4" /> Refresh access
+                </Button>
+                <Button type="button" variant="ghost" onClick={onDisconnectRepository}>
+                  Change repository
+                </Button>
+              </div>
+            </div>
+          ) : authSession ? (
+            <div className="space-y-4">
+              <div>
+                <p className="text-sm font-semibold text-slate-900">Choose a repository...</p>
+                <p className="mt-1 text-sm text-slate-600">
+                  Ilm only shows repositories granted to the GitHub App installation.
+                </p>
+              </div>
+              {repositoriesLoading ? (
+                <div className="h-11 animate-pulse rounded-md bg-slate-100" />
+              ) : repositories && repositories.length > 0 ? (
                 <select
-                  className="flex-1 rounded-md border border-zinc-300 p-2 text-sm"
+                  aria-label="Select repository"
+                  className="cursor-pointer"
                   onChange={(e) => {
                     const repoId = Number(e.target.value);
                     if (repoId) onSelectRepository(repoId);
@@ -1204,32 +1750,149 @@ function Dashboard({
                   <option value="" disabled>
                     Choose a repository...
                   </option>
-                  {state.availableRepositories.map((repo) => (
+                  {repositories.map((repo) => (
                     <option key={repo.id} value={repo.id}>
                       {repo.fullName}
                     </option>
                   ))}
                 </select>
-              </div>
-              <div className="mt-4 text-sm text-zinc-500">
-                Don't see your repository?{" "}
-                <button
-                  type="button"
-                  onClick={onConfigureRepositories}
-                  className="text-blue-600 hover:underline font-medium"
-                >
-                  Configure GitHub App permissions
-                </button>
+              ) : (
+                <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+                  No repositories available. Configure GitHub App permissions.
+                </div>
+              )}
+              <div className="flex flex-wrap gap-2">
+                <Button type="button" variant="secondary" onClick={onLoadRepositories}>
+                  <RefreshCw className="h-4 w-4" /> Retry repositories
+                </Button>
+                <Button type="button" variant="ghost" onClick={onConfigureRepositories}>
+                  Configure GitHub App
+                </Button>
               </div>
             </div>
           ) : (
-            <div className="mt-4 flex justify-start">
-              <Button onClick={onConnect}>
-                <KeyRound className="mr-2 h-4 w-4" />
-                Connect GitHub
-              </Button>
+            <div>
+              <p className="text-sm font-semibold text-slate-900">
+                Authenticate with GitHub to unlock your workspace.
+              </p>
+              <p className="mt-1 text-sm text-slate-600">
+                Ilm requests repository-scoped access through your GitHub App installation.
+              </p>
+              <div className="mt-4 flex flex-wrap gap-2">
+                <Button type="button" onClick={onConnect} disabled={!appMetadataLoaded}>
+                  <KeyRound className="h-4 w-4" />
+                  Connect GitHub
+                </Button>
+                <Button type="button" variant="ghost" onClick={onConfigureRepositories}>
+                  Configure GitHub App
+                </Button>
+              </div>
             </div>
           )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function SetupStep({
+  icon,
+  label,
+  active,
+  complete
+}: {
+  readonly icon: React.ReactNode;
+  readonly label: string;
+  readonly active: boolean;
+  readonly complete: boolean;
+}) {
+  return (
+    <li className="flex items-center gap-3 text-sm">
+      <span
+        className={[
+          "flex h-8 w-8 items-center justify-center rounded-md border",
+          complete
+            ? "border-emerald-300 bg-emerald-100 text-emerald-700"
+            : active
+              ? "border-slate-900 bg-slate-900 text-white"
+              : "border-slate-200 bg-white text-slate-500"
+        ].join(" ")}
+      >
+        {complete ? <CheckCircle2 className="h-4 w-4" /> : icon}
+      </span>
+      <span className={active || complete ? "font-medium text-slate-950" : "text-slate-500"}>
+        {label}
+      </span>
+    </li>
+  );
+}
+
+function AuthRequiredPage({
+  pageName,
+  authStatus,
+  authMessage,
+  onConnect,
+  onConfigureRepositories,
+  onRefreshAccess
+}: {
+  readonly pageName: string;
+  readonly authStatus: AuthStatus;
+  readonly authMessage: string;
+  readonly onConnect: () => void;
+  readonly onConfigureRepositories: () => void;
+  readonly onRefreshAccess: () => void;
+}) {
+  const expired = authStatus === "expired";
+
+  return (
+    <>
+      <PageHeader title={pageName} description={`Authenticate before opening ${pageName}.`} />
+      <section className="p-6">
+        <div className="mx-auto max-w-3xl overflow-hidden rounded-md border border-slate-200 bg-white shadow-sm">
+          <div className="bg-slate-950 p-6 text-white">
+            <div className="flex items-center gap-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-md bg-emerald-400 text-slate-950">
+                {expired ? <RefreshCw className="h-5 w-5" /> : <KeyRound className="h-5 w-5" />}
+              </div>
+              <div>
+                <h2 className="text-xl font-semibold">Connect GitHub</h2>
+                <p className="text-sm text-slate-300">
+                  Connect GitHub → Select Repository → Ready to Publish
+                </p>
+              </div>
+            </div>
+          </div>
+          <div className="p-6">
+            {authMessage && (
+              <div className="mb-4 flex gap-3 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">
+                <AlertTriangle className="mt-0.5 h-4 w-4 flex-none" />
+                <span>{authMessage}</span>
+              </div>
+            )}
+            <p className="text-sm font-semibold text-slate-900">
+              {expired
+                ? "Session expired. Reconnect to continue."
+                : `Authenticate before opening ${pageName}.`}
+            </p>
+            <p className="mt-2 text-sm text-slate-600">
+              Ilm keeps repository access scoped to your GitHub App installation and stores tokens
+              only for this browser session.
+            </p>
+            <div className="mt-5 flex flex-wrap gap-2">
+              {expired ? (
+                <Button type="button" onClick={onRefreshAccess}>
+                  <RefreshCw className="h-4 w-4" /> Refresh access
+                </Button>
+              ) : (
+                <Button type="button" onClick={onConnect}>
+                  <KeyRound className="h-4 w-4" /> Connect GitHub
+                </Button>
+              )}
+              <Button type="button" variant="ghost" onClick={onConfigureRepositories}>
+                Configure GitHub App
+              </Button>
+            </div>
+          </div>
         </div>
       </section>
     </>
@@ -1330,13 +1993,19 @@ function EditorPage({
   aiSuggestion,
   publishProgress,
   localRecoveryAvailable,
+  staticSiteReady,
+  isInitializingTemplate,
+  livePostUrl,
+  siteHomeUrl,
+  onInitializeTemplate,
   onChange,
   onGenerateSlug,
   onSuggest,
   onApproveSuggestion,
   onSaveDraft,
   onPublish,
-  onAddMedia
+  onAddMedia,
+  connected
 }: {
   readonly draft: DraftRecord;
   readonly seoScore: number;
@@ -1351,6 +2020,11 @@ function EditorPage({
   readonly publishProgress?: PublishProgressStage;
   readonly localRecoveryAvailable: boolean;
   readonly connected: boolean;
+  readonly staticSiteReady: boolean;
+  readonly isInitializingTemplate?: boolean;
+  readonly livePostUrl?: string;
+  readonly siteHomeUrl?: string;
+  readonly onInitializeTemplate: () => void;
   readonly onChange: (patch: Partial<DraftRecord>) => void;
   readonly onGenerateSlug: () => void;
   readonly onSuggest: (kind: AiSuggestionKind) => void;
@@ -1359,6 +2033,33 @@ function EditorPage({
   readonly onPublish: () => void;
   readonly onAddMedia: (media: Omit<MediaRecord, "id">) => void;
 }) {
+  const postDestinationUrl = siteHomeUrl
+    ? `${siteHomeUrl.replace(/\/$/, "")}/posts/${draft.slug}/`
+    : "";
+  const publishDisabled =
+    !connected ||
+    !staticSiteReady ||
+    publishProgress === "validating-site" ||
+    publishProgress === "creating-commit" ||
+    publishProgress === "deploying" ||
+    publishProgress === "building" ||
+    publishProgress === "verifying-live-url";
+  const publishLabel = !connected
+    ? "Connect repo to publish"
+    : !staticSiteReady
+      ? "Set up site to publish"
+      : publishProgress === "validating-site"
+        ? "Validating site..."
+        : publishProgress === "creating-commit"
+          ? "Committing..."
+          : publishProgress === "building" || publishProgress === "deploying"
+            ? "Deploying..."
+            : publishProgress === "verifying-live-url"
+              ? "Verifying live URL..."
+              : publishProgress === "live" || publishProgress === "published"
+                ? "Live!"
+                : `Publish ${seoScore < 50 ? "(Low SEO)" : ""}`;
+
   const editor = useEditor({
     extensions: defaultEditorExtensions,
     content: draft.markdown,
@@ -1482,6 +2183,30 @@ function EditorPage({
               </Field>
             </div>
           </Panel>
+          {!staticSiteReady && (
+            <Panel title="Set Up Blog Site">
+              <div className="rounded-md border border-blue-200 bg-blue-50 p-4">
+                <div className="flex items-start gap-3">
+                  <UploadCloud className="mt-0.5 h-5 w-5 text-blue-700" />
+                  <div>
+                    <h2 className="text-sm font-semibold text-blue-950">Set Up Blog Site</h2>
+                    <p className="mt-1 text-sm text-blue-800">
+                      This repository needs the Astro blog files and GitHub Pages workflow before a
+                      post can go live.
+                    </p>
+                    <Button
+                      type="button"
+                      className="mt-4"
+                      onClick={onInitializeTemplate}
+                      disabled={isInitializingTemplate}
+                    >
+                      {isInitializingTemplate ? "Setting up..." : "Set Up Blog Site"}
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            </Panel>
+          )}
           <Panel title="Markdown editor">
             <EditorToolbar editor={editor} />
             <EditorContent
@@ -1496,34 +2221,23 @@ function EditorPage({
                 type="button"
                 variant="secondary"
                 onClick={onPublish}
-                disabled={
-                  !connected ||
-                  publishProgress === "creating-commit" ||
-                  publishProgress === "deploying" ||
-                  publishProgress === "building"
-                }
+                disabled={publishDisabled}
                 title={
                   !connected
                     ? "Connect repository first"
-                    : seoScore < 50
-                      ? "Warning: Low SEO score"
-                      : "Ready to publish"
+                    : !staticSiteReady
+                      ? "Set up the static blog site first"
+                      : seoScore < 50
+                        ? "Warning: Low SEO score"
+                        : "Ready to publish"
                 }
               >
-                {!connected
-                  ? "Connect repo to publish"
-                  : publishProgress === "creating-commit"
-                    ? "Committing..."
-                    : publishProgress === "building" || publishProgress === "deploying"
-                      ? "Deploying..."
-                      : publishProgress === "published"
-                        ? "Published!"
-                        : `Publish ${seoScore < 50 ? "(Low SEO)" : ""}`}
+                {publishLabel}
               </Button>
-              {publishProgress === "published" && (
+              {(publishProgress === "live" || publishProgress === "published") && livePostUrl && (
                 <Button
                   type="button"
-                  onClick={() => window.open(seoMetadata.canonicalUrl, "_blank")}
+                  onClick={() => window.open(livePostUrl, "_blank")}
                   className="bg-green-600 hover:bg-green-700 text-white"
                 >
                   View Live Post <Sparkles className="ml-2 h-4 w-4" />
@@ -1533,6 +2247,52 @@ function EditorPage({
           </Panel>
         </div>
         <aside className="space-y-4">
+          <Panel title="Static site">
+            <div className="space-y-3 text-sm">
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-zinc-600">Status</span>
+                <span
+                  className={`rounded-full px-2 py-1 text-xs font-semibold ${
+                    staticSiteReady
+                      ? "bg-green-100 text-green-700"
+                      : "bg-blue-100 text-blue-700"
+                  }`}
+                >
+                  {staticSiteReady ? "Ready to publish" : "Setup required"}
+                </span>
+              </div>
+              {siteHomeUrl && (
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
+                    Site home
+                  </p>
+                  <a
+                    href={siteHomeUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="mt-1 block break-words text-blue-700 hover:underline"
+                  >
+                    {siteHomeUrl}
+                  </a>
+                </div>
+              )}
+              {(livePostUrl || postDestinationUrl) && (
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
+                    Live post URL
+                  </p>
+                  <a
+                    href={livePostUrl || postDestinationUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="mt-1 block break-words text-blue-700 hover:underline"
+                  >
+                    {livePostUrl || postDestinationUrl}
+                  </a>
+                </div>
+              )}
+            </div>
+          </Panel>
           <Panel title="AI Assistant">
             <div className="grid grid-cols-2 gap-2">
               <Button
@@ -1926,9 +2686,7 @@ function SettingsPage({
                     disabled={isInitializingTemplate}
                     className="w-full bg-amber-600 hover:bg-amber-700 text-white shadow-sm"
                   >
-                    {isInitializingTemplate
-                      ? "Initializing..."
-                      : "Initialize Astro Blog Template ✨"}
+                    {isInitializingTemplate ? "Initializing..." : "Initialize Astro Blog Template"}
                   </Button>
                 </div>
               </div>
@@ -2021,11 +2779,11 @@ function SettingsPage({
             <div className="text-xs text-zinc-500">
               {geminiEncrypted ? (
                 <span className="text-green-600 font-medium">
-                  ✓ Key is encrypted and stored locally
+                  Key is encrypted and stored locally
                 </span>
               ) : geminiApiKey ? (
                 <span className="text-blue-600 font-medium">
-                  ✓ Key is loaded for this session only
+                  Key is loaded for this session only
                 </span>
               ) : (
                 <span>No API key set. Connect a key to enable AI Suggest.</span>

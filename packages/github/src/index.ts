@@ -22,6 +22,12 @@ export type GitHubCommitRequest = GitHubRepositoryRef & {
 
 export type GitHubWorkflowStatus = "queued" | "in_progress" | "completed" | "failed";
 
+export type GitHubPagesSite = {
+  readonly htmlUrl: string;
+  readonly status?: string;
+  readonly buildType?: string;
+};
+
 export type GitHubRepositorySummary = {
   readonly id: number;
   readonly name: string;
@@ -45,16 +51,28 @@ export class GitHubClient {
 
   static async listAvailableRepositories(userToken: string): Promise<GitHubRepositorySummary[]> {
     const octokit = new Octokit({ auth: userToken });
-    const installationsRes = await octokit.apps.listInstallationsForAuthenticatedUser();
+    const installations = await paginateGitHub(
+      (page) =>
+        octokit.apps.listInstallationsForAuthenticatedUser({
+          per_page: 100,
+          page
+        }),
+      (response) => response.data.installations
+    );
 
     const allRepos: GitHubRepositorySummary[] = [];
-    for (const inst of installationsRes.data.installations) {
-      const reposRes = await octokit.apps.listInstallationReposForAuthenticatedUser({
-        installation_id: inst.id,
-        per_page: 100
-      });
+    for (const inst of installations) {
+      const repositories = await paginateGitHub(
+        (page) =>
+          octokit.apps.listInstallationReposForAuthenticatedUser({
+            installation_id: inst.id,
+            per_page: 100,
+            page
+          }),
+        (response) => response.data.repositories
+      );
 
-      const repos = reposRes.data.repositories.map((repo) => ({
+      const repos = repositories.map((repo) => ({
         id: repo.id,
         name: repo.name,
         fullName: repo.full_name,
@@ -109,7 +127,11 @@ export class GitHubClient {
         path,
         ref: ref.branch
       });
-      if (response.data && "content" in response.data) {
+      if (
+        typeof response.data === "object" &&
+        response.data !== null &&
+        "content" in response.data
+      ) {
         return atob(response.data.content);
       }
       throw new Error("Target path is not a file");
@@ -154,9 +176,9 @@ export class GitHubClient {
                   type: "blob" as const,
                   sha: null
                 };
-              } catch (err: any) {
+              } catch (err: unknown) {
                 // If the file is not found (404), it's already deleted or never existed.
-                if (err.status === 404) {
+                if (isGitHubStatusError(err, 404)) {
                   return null;
                 }
                 throw err;
@@ -227,6 +249,63 @@ export class GitHubClient {
     return run.conclusion === "success" ? "completed" : "failed";
   }
 
+  async getWorkflowStatusForCommit(
+    ref: GitHubRepositoryRef,
+    commitSha: string
+  ): Promise<GitHubWorkflowStatus> {
+    const response = await this.octokit.actions.listWorkflowRunsForRepo({
+      owner: ref.owner,
+      repo: ref.repo,
+      branch: ref.branch,
+      per_page: 20
+    });
+    const run = response.data.workflow_runs.find((item) => item.head_sha === commitSha);
+    if (!run) return "queued";
+
+    const current = await this.octokit.actions.getWorkflowRun({
+      owner: ref.owner,
+      repo: ref.repo,
+      run_id: run.id
+    });
+    return normalizeWorkflowRunStatus(current.data.status, current.data.conclusion);
+  }
+
+  async getPagesSite(ref: GitHubRepositoryRef): Promise<GitHubPagesSite | undefined> {
+    try {
+      const response = await this.octokit.repos.getPages({
+        owner: ref.owner,
+        repo: ref.repo
+      });
+      return normalizePagesSite(response.data);
+    } catch (error: unknown) {
+      if (isGitHubStatusError(error, 404)) return undefined;
+      throw error;
+    }
+  }
+
+  async ensurePagesSite(ref: GitHubRepositoryRef): Promise<GitHubPagesSite> {
+    const current = await this.getPagesSite(ref);
+    if (!current) {
+      const created = await this.octokit.repos.createPagesSite({
+        owner: ref.owner,
+        repo: ref.repo,
+        build_type: "workflow"
+      });
+      return normalizePagesSite(created.data);
+    }
+
+    if (current.buildType !== "workflow") {
+      await this.octokit.repos.updateInformationAboutPagesSite({
+        owner: ref.owner,
+        repo: ref.repo,
+        build_type: "workflow"
+      });
+      return (await this.getPagesSite(ref)) ?? current;
+    }
+
+    return current;
+  }
+
   async initializeAstroTemplate(ref: GitHubRepositoryRef): Promise<GitHubCommitResult> {
     const TEMPLATE_OWNER = "ij-roy";
     const TEMPLATE_REPO = "Ilm";
@@ -294,8 +373,18 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Install, build, and upload your site
-        uses: withastro/action@v2
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install dependencies
+        run: npm install
+      - name: Build
+        run: npm run build
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./dist
 
   deploy:
     needs: build
@@ -309,12 +398,95 @@ jobs:
         uses: actions/deploy-pages@v4
 `;
 
-    commitFiles.push({
-      operation: "upsert",
-      path: ".github/workflows/deploy.yml",
-      content: deployWorkflowContent,
-      encoding: "utf-8"
-    });
+    commitFiles.push(
+      {
+        operation: "upsert",
+        path: "content/posts/welcome.md",
+        content: `---
+title: "Welcome to Ilm"
+slug: "welcome-to-ilm"
+description: "Your first live post managed by Ilm."
+publishedAt: "${new Date().toISOString()}"
+updatedAt: "${new Date().toISOString()}"
+tags: ["ilm"]
+categories: ["publishing"]
+author: "Ilm"
+---
+
+# Welcome to Ilm
+
+This post lives in your repository at \`content/posts/welcome.md\` and is rendered by your static site.
+`,
+        encoding: "utf-8"
+      },
+      {
+        operation: "upsert",
+        path: "content/drafts/.gitkeep",
+        content: "",
+        encoding: "utf-8"
+      },
+      {
+        operation: "upsert",
+        path: "media/images/.gitkeep",
+        content: "",
+        encoding: "utf-8"
+      },
+      {
+        operation: "upsert",
+        path: "media/covers/.gitkeep",
+        content: "",
+        encoding: "utf-8"
+      },
+      {
+        operation: "upsert",
+        path: "media/attachments/.gitkeep",
+        content: "",
+        encoding: "utf-8"
+      },
+      {
+        operation: "upsert",
+        path: "config/site.ts",
+        content: `export const siteConfig = {
+  title: "Ilm Blog",
+  description: "A GitHub-backed static blog powered by Ilm.",
+  url: "https://example.com",
+  locale: "en",
+  author: {
+    name: "Ilm Author"
+  }
+};
+`,
+        encoding: "utf-8"
+      },
+      {
+        operation: "upsert",
+        path: "config/seo.ts",
+        content: `export const seoConfig = {
+  defaultTitle: "Ilm Blog",
+  defaultDescription: "A GitHub-backed static blog powered by Ilm.",
+  canonicalBaseUrl: "https://example.com",
+  robots: "index,follow"
+};
+`,
+        encoding: "utf-8"
+      },
+      {
+        operation: "upsert",
+        path: "config/navigation.ts",
+        content: `export const navigationConfig = {
+  header: [{ label: "Home", href: "/" }],
+  footer: []
+};
+`,
+        encoding: "utf-8"
+      },
+      {
+        operation: "upsert",
+        path: ".github/workflows/deploy.yml",
+        content: deployWorkflowContent,
+        encoding: "utf-8"
+      }
+    );
 
     // 5. Commit everything to the user's repository
     return this.executeCommit({
@@ -325,6 +497,62 @@ jobs:
       files: commitFiles
     });
   }
+}
+
+type GitHubPaginatedResponse<T> = {
+  readonly data: T;
+  readonly headers?: {
+    readonly link?: string;
+  };
+};
+
+async function paginateGitHub<TResponse extends GitHubPaginatedResponse<unknown>, TItem>(
+  requestPage: (page: number) => Promise<TResponse>,
+  selectItems: (response: TResponse) => readonly TItem[]
+): Promise<TItem[]> {
+  const items: TItem[] = [];
+  let page = 1;
+  let hasNext = true;
+
+  while (hasNext) {
+    const response = await requestPage(page);
+    items.push(...selectItems(response));
+    hasNext = Boolean(response.headers?.link?.includes('rel="next"'));
+    page += 1;
+  }
+
+  return items;
+}
+
+function isGitHubStatusError(error: unknown, status: number): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "status" in error &&
+    (error as { readonly status?: unknown }).status === status
+  );
+}
+
+function normalizeWorkflowRunStatus(
+  status?: string | null,
+  conclusion?: string | null
+): GitHubWorkflowStatus {
+  if (status === "queued" || status === "requested" || status === "waiting") return "queued";
+  if (status === "in_progress") return "in_progress";
+  if (status !== "completed") return "in_progress";
+  return conclusion === "success" ? "completed" : "failed";
+}
+
+function normalizePagesSite(data: {
+  readonly html_url?: string | null;
+  readonly status?: string | null;
+  readonly build_type?: string | null;
+}): GitHubPagesSite {
+  return {
+    htmlUrl: data.html_url ?? "",
+    status: data.status ?? undefined,
+    buildType: data.build_type ?? undefined
+  };
 }
 
 export class LocalGitHubClient {
@@ -399,6 +627,22 @@ export class LocalGitHubClient {
 
   async getWorkflowStatus(): Promise<GitHubWorkflowStatus> {
     return "completed";
+  }
+
+  async getWorkflowStatusForCommit(): Promise<GitHubWorkflowStatus> {
+    return "completed";
+  }
+
+  async getPagesSite(): Promise<GitHubPagesSite> {
+    return {
+      htmlUrl: "https://ij-roy.github.io/ilm-test-blog/",
+      status: "built",
+      buildType: "workflow"
+    };
+  }
+
+  async ensurePagesSite(): Promise<GitHubPagesSite> {
+    return this.getPagesSite();
   }
 
   async initializeAstroTemplate(ref: GitHubRepositoryRef): Promise<GitHubCommitResult> {

@@ -14,38 +14,64 @@ export type TemplatePost = {
 const contentRoot = fileURLToPath(new URL("../content/posts", import.meta.url));
 const draftRoot = fileURLToPath(new URL("../content/drafts", import.meta.url));
 
-export async function getPublishedPosts(): Promise<TemplatePost[]> {
+export function getSeoConfigPath(repoRoot: string = process.cwd()): string {
+  return join(repoRoot, "config", "seo.ts").replace(/\\/g, "/");
+}
+
+export async function getPublishedPosts(repoRoot: string = process.cwd()): Promise<TemplatePost[]> {
+  const repositoryContentRoot = join(repoRoot, "content", "posts");
   try {
-    const files = (await readdir(contentRoot)).filter((file) => file.endsWith(".md"));
-    return Promise.all(files.map((f) => readPost(f)));
+    const files = (await readdir(repositoryContentRoot)).filter((file) => file.endsWith(".md"));
+    return Promise.all(files.map((file) => readPost(file, false, repoRoot)));
   } catch {
-    return [];
+    try {
+      const files = (await readdir(contentRoot)).filter((file) => file.endsWith(".md"));
+      return Promise.all(files.map((file) => readPost(file)));
+    } catch {
+      return [];
+    }
   }
 }
 
-async function readPost(fileName: string, isDraft: boolean = false): Promise<TemplatePost> {
-  const root = isDraft ? draftRoot : contentRoot;
+async function readPost(
+  fileName: string,
+  isDraft: boolean = false,
+  repoRoot?: string
+): Promise<TemplatePost> {
+  const root = repoRoot
+    ? join(repoRoot, isDraft ? "content/drafts" : "content/posts")
+    : isDraft
+      ? draftRoot
+      : contentRoot;
   const raw = await readFile(join(root, fileName), "utf-8");
   const parsed = matter(raw);
   return {
     title: String(parsed.data.title ?? "Untitled"),
     slug: String(parsed.data.slug ?? fileName.replace(/\.md$/, "")),
     description: String(parsed.data.description ?? ""),
-    body: parsed.content,
+    body: parsed.content.trimStart(),
     isDraft
   };
 }
 
 export async function getSearchableContent(isDev: boolean): Promise<TemplatePost[]> {
-  const posts = await getPublishedPosts();
+  const repoRoot = process.cwd();
+  const posts = await getPublishedPosts(repoRoot);
   let drafts: TemplatePost[] = [];
 
   if (isDev) {
     try {
-      const files = (await readdir(draftRoot)).filter((file) => file.endsWith(".md"));
-      drafts = await Promise.all(files.map((f) => readPost(f, true)));
+      const files = (await readdir(join(repoRoot, "content", "drafts"))).filter((file) =>
+        file.endsWith(".md")
+      );
+      drafts = await Promise.all(files.map((file) => readPost(file, true, repoRoot)));
     } catch {
-      // no drafts directory
+      try {
+        const files = (await readdir(draftRoot)).filter((file) => file.endsWith(".md"));
+        drafts = await Promise.all(files.map((file) => readPost(file, true)));
+      } catch {
+        // no drafts directory
+      }
     }
   }
 
