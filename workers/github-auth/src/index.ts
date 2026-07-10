@@ -16,6 +16,61 @@ function json(data: unknown, init: ResponseInit = {}, corsOrigin: string = "*"):
   });
 }
 
+const contentInstallationPermissions = ["Contents: write", "Actions: read"] as const;
+
+const pagesSetupInstallationPermissions = [
+  "Contents: write",
+  "Actions: read",
+  "Workflows: write",
+  "Pages: write",
+  "Administration: write"
+] as const;
+
+type InstallationTokenPurpose = "content" | "pages-setup";
+
+function getInstallationTokenPermissions(purpose: InstallationTokenPurpose) {
+  return purpose === "pages-setup"
+    ? {
+        contents: "write",
+        actions: "read",
+        workflows: "write",
+        pages: "write",
+        administration: "write",
+        metadata: "read"
+      }
+    : {
+        contents: "write",
+        actions: "read",
+        metadata: "read"
+      };
+}
+
+function getRequiredPermissionLabels(purpose: InstallationTokenPurpose) {
+  return purpose === "pages-setup"
+    ? pagesSetupInstallationPermissions
+    : contentInstallationPermissions;
+}
+
+type GitHubErrorPayload = {
+  readonly message?: string;
+  readonly errors?: readonly {
+    readonly message?: string;
+  }[];
+};
+
+function describeGitHubError(text: string): string {
+  try {
+    const payload = JSON.parse(text) as GitHubErrorPayload;
+    const messages = [
+      payload.message,
+      ...(payload.errors ?? []).map((error) => error.message)
+    ].filter((message): message is string => Boolean(message));
+    return messages.length > 0 ? messages.join(": ") : text;
+  } catch {
+    return text;
+  }
+}
+
 function getAllowedOrigin(env: Env, requestOrigin: string | null): string {
   const allowed = (env.ALLOWED_ORIGIN || "http://127.0.0.1:5173").split(",").map((o) => o.trim());
   if (requestOrigin && allowed.includes(requestOrigin)) {
@@ -285,9 +340,9 @@ async function handleGenerateInstallationToken(
   }
   const userToken = authHeader.substring(7);
 
-  let body: { installationId: number };
+  let body: { installationId: number; purpose?: InstallationTokenPurpose };
   try {
-    body = (await request.json()) as { installationId: number };
+    body = (await request.json()) as { installationId: number; purpose?: InstallationTokenPurpose };
   } catch {
     return json({ error: "Invalid JSON body" }, { status: 400 }, corsOrigin);
   }
@@ -335,14 +390,22 @@ async function handleGenerateInstallationToken(
           Authorization: `Bearer ${jwt}`,
           "User-Agent": "ilm-github-auth",
           Accept: "application/vnd.github+json"
-        }
+        },
+        body: JSON.stringify({
+          permissions: getInstallationTokenPermissions(body.purpose ?? "content")
+        })
       }
     );
 
     if (!accessRes.ok) {
       const errText = await accessRes.text();
+      const details = describeGitHubError(errText);
       return json(
-        { error: "Failed to generate installation token", details: errText },
+        {
+          error: "GitHub App permissions are not approved for this installation",
+          details,
+          requiredPermissions: getRequiredPermissionLabels(body.purpose ?? "content")
+        },
         { status: accessRes.status },
         corsOrigin
       );

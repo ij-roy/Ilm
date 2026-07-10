@@ -165,7 +165,7 @@ export function DocsPage({ onConnectGitHub }: { readonly onConnectGitHub: () => 
               platform designed for technical writers and developers who value content ownership.
             </p>
             <p className="text-zinc-400 leading-relaxed text-sm">
-              Unlike traditional CMS platforms (WordPress, Medium, Ghost) which store your posts in
+              Unlike traditional CMS platforms (WordPress, Medium, Ghost) which store your blogs in
               proprietary databases and lock you into their ecosystem, Ilm treats your GitHub
               repository as the single source of truth. Your writing, assets, drafts, and
               configurations are stored as clean Markdown and open formats directly in a repository
@@ -240,7 +240,7 @@ export function DocsPage({ onConnectGitHub }: { readonly onConnectGitHub: () => 
               </li>
               <li>
                 <strong className="text-white">Static Generation (Astro):</strong> The official
-                Astro template converts your Markdown posts, covers, and config files into
+                Astro template converts your Markdown blogs, covers, and config files into
                 blisteringly fast static HTML.
               </li>
             </ul>
@@ -260,7 +260,7 @@ export function DocsPage({ onConnectGitHub }: { readonly onConnectGitHub: () => 
             </p>
             <pre className="bg-white/5 border border-white/10 rounded-xl p-5 font-mono text-xs text-zinc-300 leading-relaxed overflow-x-auto">
               {`content/
-  posts/           # Published markdown articles
+  posts/           # Published markdown blogs
   drafts/          # Draft markdown files
 media/
   images/          # Optimized WebP blog images

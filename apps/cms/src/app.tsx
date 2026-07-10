@@ -1,5 +1,5 @@
 import * as React from "react";
-import { BrowserRouter, NavLink, Route, Routes, useLocation } from "react-router-dom";
+import { BrowserRouter, Navigate, NavLink, Route, Routes, useLocation } from "react-router-dom";
 import {
   BarChart3,
   CheckCircle2,
@@ -25,7 +25,8 @@ import {
   AlertTriangle,
   GitBranch,
   RefreshCw,
-  ShieldCheck
+  ShieldCheck,
+  GripVertical
 } from "lucide-react";
 import { generateGeminiSuggestion, AiSuggestion, AiSuggestionKind } from "@ilm/ai";
 import { createGoogleOAuthUrl } from "@ilm/analytics";
@@ -148,7 +149,7 @@ type CmsState = {
 const navItems = [
   { label: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
   { label: "Editor", href: "/editor", icon: PenLine },
-  { label: "Posts", href: "/posts", icon: FileText },
+  { label: "Blogs", href: "/blogs", icon: FileText },
   { label: "Drafts", href: "/drafts", icon: FolderGit2 },
   { label: "Media", href: "/media", icon: Image },
   { label: "Search", href: "/search", icon: Search },
@@ -158,6 +159,16 @@ const navItems = [
 
 const PRIMARY_SITE_URL = "https://ilm.dophera.tech";
 const SOCIAL_IMAGE_URL = `${PRIMARY_SITE_URL}/og-image.svg`;
+const DASHBOARD_SIDEBAR_WIDTH_STORAGE_KEY = "ilm.dashboard.sidebarWidth.v1";
+const DASHBOARD_SIDEBAR_COLLAPSED_STORAGE_KEY = "ilm.dashboard.sidebarCollapsed.v1";
+const DASHBOARD_ACTIVITY_WIDTH_STORAGE_KEY = "ilm.dashboard.activityWidth.v1";
+const DASHBOARD_SIDEBAR_WIDTH_DEFAULT = 270;
+const DASHBOARD_SIDEBAR_WIDTH_MIN = 220;
+const DASHBOARD_SIDEBAR_WIDTH_MAX = 420;
+const DASHBOARD_SIDEBAR_WIDTH_COLLAPSED = 76;
+const DASHBOARD_ACTIVITY_WIDTH_DEFAULT = 360;
+const DASHBOARD_ACTIVITY_WIDTH_MIN = 280;
+const DASHBOARD_ACTIVITY_WIDTH_MAX = 560;
 
 type RouteSeo = {
   readonly title: string;
@@ -195,6 +206,25 @@ function getSeoUrl(pathname: string): string {
   const normalizedPath = normalizePathname(pathname);
   const canonicalPath = normalizedPath === "/" ? "/" : `${normalizedPath}/`;
   return new URL(canonicalPath, PRIMARY_SITE_URL).toString();
+}
+
+function clamp(value: number, minimum: number, maximum: number): number {
+  return Math.min(maximum, Math.max(minimum, value));
+}
+
+function readStoredNumber(key: string, fallback: number): number {
+  const stored = window.localStorage.getItem(key);
+  if (!stored) return fallback;
+
+  const parsed = Number(stored);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function readStoredBoolean(key: string, fallback: boolean): boolean {
+  const stored = window.localStorage.getItem(key);
+  if (stored === null) return fallback;
+
+  return stored === "true";
 }
 
 function upsertMeta(attribute: "name" | "property", key: string, content: string | null) {
@@ -414,6 +444,29 @@ function writeAuthSession(session: AuthSession | undefined) {
     return;
   }
   window.sessionStorage.setItem(authSessionKey, JSON.stringify(session));
+}
+
+function describeWorkerError(data: unknown, fallback: string): string {
+  if (!data || typeof data !== "object") return fallback;
+  const payload = data as {
+    readonly error?: unknown;
+    readonly details?: unknown;
+    readonly requiredPermissions?: unknown;
+  };
+  const base = typeof payload.error === "string" ? payload.error : fallback;
+  const details = typeof payload.details === "string" ? payload.details : "";
+  const permissions = Array.isArray(payload.requiredPermissions)
+    ? payload.requiredPermissions.filter(
+        (permission): permission is string => typeof permission === "string"
+      )
+    : [];
+  return [
+    base,
+    details,
+    permissions.length > 0 ? `Required permissions: ${permissions.join(", ")}` : ""
+  ]
+    .filter(Boolean)
+    .join(". ");
 }
 
 function isExpired(expiresAt?: string): boolean {
@@ -663,10 +716,18 @@ function CmsApplication() {
     );
   }, [repoEntries]);
 
-  const staticSiteReady = Boolean(state.repository && hasFrontend);
+  const hasBlogRoute = React.useMemo(() => {
+    return repoEntries.some((e) => e.path === "src/pages/blogs/[slug].astro");
+  }, [repoEntries]);
+
+  const hasDeployWorkflow = React.useMemo(() => {
+    return repoEntries.some((e) => e.path === ".github/workflows/deploy.yml");
+  }, [repoEntries]);
+
+  const staticSiteReady = Boolean(state.repository && hasFrontend && hasBlogRoute && hasDeployWorkflow);
 
   React.useEffect(() => {
-    if (!state.repository || !hasFrontend) return;
+    if (!state.repository || !hasFrontend || !hasBlogRoute) return;
 
     activeGithubClient
       .getPagesSite(state.repository)
@@ -681,15 +742,21 @@ function CmsApplication() {
       .catch((err: unknown) => {
         setStatus(`Repository needs Pages permission: ${(err as Error).message}`);
       });
-  }, [state.repository, hasFrontend, activeGithubClient]);
+  }, [state.repository, hasFrontend, hasBlogRoute, activeGithubClient]);
 
   async function initializeTemplate() {
     if (!state.repository) return;
+    if (!authSession?.installationId) {
+      setStatus("Repository access not granted");
+      return;
+    }
     setState((c) => ({ ...c, isInitializingTemplate: true }));
     setStatus("Setting up your static blog site...");
     try {
-      const result = await activeGithubClient.initializeAstroTemplate(state.repository);
-      const site = await activeGithubClient.ensurePagesSite(state.repository);
+      const data = await requestInstallationToken(authSession.installationId, "pages-setup");
+      const setupGithubClient = new GitHubClient(data.token);
+      const result = await setupGithubClient.initializeAstroTemplate(state.repository);
+      const site = await setupGithubClient.ensurePagesSite(state.repository);
       setState((current) => ({
         ...current,
         siteHomeUrl: site.htmlUrl,
@@ -698,7 +765,7 @@ function CmsApplication() {
       setStatus(`Static blog site ready at ${result.sha}`);
       addEvent("repository", "Initialized Astro template");
 
-      const entries = await activeGithubClient.getRepositoryEntries(state.repository);
+      const entries = await setupGithubClient.getRepositoryEntries(state.repository);
       setRepoEntries(entries);
     } catch (err: unknown) {
       setStatus(`Failed to initialize template: ${(err as Error).message}`);
@@ -736,7 +803,10 @@ function CmsApplication() {
     }
   }
 
-  async function requestInstallationToken(installationId: number | string): Promise<{
+  async function requestInstallationToken(
+    installationId: number | string,
+    purpose: "content" | "pages-setup" = "content"
+  ): Promise<{
     readonly token: string;
     readonly expiresAt?: string;
   }> {
@@ -750,11 +820,11 @@ function CmsApplication() {
         "Content-Type": "application/json",
         Authorization: `Bearer ${authSession.userToken}`
       },
-      body: JSON.stringify({ installationId: Number(installationId) })
+      body: JSON.stringify({ installationId: Number(installationId), purpose })
     });
     if (!res.ok) {
       const errData = await res.json().catch(() => null);
-      throw new Error(errData?.error || "Failed to fetch installation token");
+      throw new Error(describeWorkerError(errData, "Failed to fetch installation token"));
     }
     return (await res.json()) as { token: string; expiresAt?: string };
   }
@@ -1041,7 +1111,7 @@ function CmsApplication() {
   }
 
   function createLivePostUrl(siteHomeUrl: string, slug: string): string {
-    return `${siteHomeUrl.replace(/\/$/, "")}/posts/${generateSlug(slug)}/`;
+    return `${siteHomeUrl.replace(/\/$/, "")}/blogs/${generateSlug(slug)}/`;
   }
 
   async function verifyLiveUrl(url: string): Promise<boolean> {
@@ -1099,8 +1169,15 @@ function CmsApplication() {
     setStatus("Validating static site setup...");
 
     let pagesSite: GitHubPagesSite;
+    let pagesClient: typeof activeGithubClient;
     try {
-      pagesSite = await activeGithubClient.ensurePagesSite(state.repository);
+      pagesClient =
+        authSession?.installationId && authSession.userToken
+          ? new GitHubClient(
+              (await requestInstallationToken(authSession.installationId, "pages-setup")).token
+            )
+          : activeGithubClient;
+      pagesSite = await pagesClient.ensurePagesSite(state.repository);
       setState((current) => ({
         ...current,
         siteHomeUrl: pagesSite.htmlUrl,
@@ -1113,7 +1190,7 @@ function CmsApplication() {
     }
 
     setState((c) => ({ ...c, publishProgress: "creating-commit" }));
-    setStatus("Committing post to GitHub...");
+    setStatus("Committing blog to GitHub...");
 
     let result;
     try {
@@ -1134,7 +1211,7 @@ function CmsApplication() {
       publishProgress: "building"
     }));
     setStatus(`Committed at ${result.sha}. Waiting for deployment...`);
-    addEvent("publish", `Committed ${plan.value.postPath}`);
+    addEvent("publish", "Committed blog markdown");
 
     for (let attempts = 0; attempts < 30; attempts++) {
       await new Promise((res) => setTimeout(res, 2000));
@@ -1146,7 +1223,7 @@ function CmsApplication() {
         );
         if (status === "completed") {
           setState((c) => ({ ...c, publishProgress: "verifying-live-url" }));
-          setStatus("Verifying live post URL...");
+          setStatus("Verifying live blog URL...");
           const livePostUrl = createLivePostUrl(pagesSite.htmlUrl, state.activeDraft.slug);
           const reachable = await verifyLiveUrl(livePostUrl);
           if (reachable) {
@@ -1156,8 +1233,8 @@ function CmsApplication() {
               livePostUrl,
               siteHomeUrl: pagesSite.htmlUrl
             }));
-            setStatus("Live post verified.");
-            addEvent("publish", "Live post verified on GitHub Pages");
+            setStatus("Live blog verified.");
+            addEvent("publish", "Live blog verified on GitHub Pages");
           } else {
             setState((c) => ({
               ...c,
@@ -1176,6 +1253,16 @@ function CmsApplication() {
         } else if (status === "in_progress") {
           setState((c) => ({ ...c, publishProgress: "deploying" }));
           setStatus("Deploying via GitHub Actions...");
+        } else if (status === "queued") {
+          setState((c) => ({ ...c, publishProgress: "building" }));
+          setStatus("Waiting for GitHub Actions to start for this commit...");
+        } else if (status === "not_found") {
+          setState((c) => ({ ...c, publishProgress: "building" }));
+          setStatus(
+            attempts < 5
+              ? "Waiting for GitHub Actions to register this commit..."
+              : "No GitHub Actions run found for this commit yet. Check that .github/workflows/deploy.yml exists on the selected branch and repository Actions are enabled."
+          );
         }
       } catch {
         setState((c) => ({ ...c, publishProgress: "failed" }));
@@ -1183,6 +1270,21 @@ function CmsApplication() {
         break;
       }
     }
+
+    setState((c) =>
+      c.publishProgress === "building" || c.publishProgress === "deploying"
+        ? { ...c, publishProgress: "failed" }
+        : c
+    );
+    setStatus((currentStatus) =>
+      currentStatus === "Deploying via GitHub Actions..." ||
+      currentStatus.includes("Waiting for deployment") ||
+      currentStatus.includes("Waiting for GitHub Actions") ||
+      currentStatus.includes("Waiting for GitHub Actions to register") ||
+      currentStatus.includes("No GitHub Actions run found")
+        ? "GitHub Actions did not create a deploy run for this commit. Check that .github/workflows/deploy.yml exists on the selected branch and that repository Actions are enabled."
+        : currentStatus
+    );
   }
 
   const localRecoveryAvailable = isLocalDraftNewer(
@@ -1218,6 +1320,117 @@ function CmsApplication() {
   const isAuthenticated = Boolean(authSession?.userToken) && authStatus !== "expired";
   const repositoryConnected = authStatus === "repo-connected";
 
+  const [dashboardSidebarCollapsed, setDashboardSidebarCollapsed] = React.useState(() =>
+    readStoredBoolean(DASHBOARD_SIDEBAR_COLLAPSED_STORAGE_KEY, false)
+  );
+  const [dashboardSidebarWidth, setDashboardSidebarWidth] = React.useState(() =>
+    clamp(
+      readStoredNumber(DASHBOARD_SIDEBAR_WIDTH_STORAGE_KEY, DASHBOARD_SIDEBAR_WIDTH_DEFAULT),
+      DASHBOARD_SIDEBAR_WIDTH_MIN,
+      DASHBOARD_SIDEBAR_WIDTH_MAX
+    )
+  );
+  const [dashboardActivityWidth, setDashboardActivityWidth] = React.useState(() =>
+    clamp(
+      readStoredNumber(DASHBOARD_ACTIVITY_WIDTH_STORAGE_KEY, DASHBOARD_ACTIVITY_WIDTH_DEFAULT),
+      DASHBOARD_ACTIVITY_WIDTH_MIN,
+      DASHBOARD_ACTIVITY_WIDTH_MAX
+    )
+  );
+  const resizeSessionRef = React.useRef<{
+    readonly kind: "sidebar" | "activity";
+    readonly startX: number;
+    readonly startWidth: number;
+  } | null>(null);
+
+  React.useEffect(() => {
+    window.localStorage.setItem(DASHBOARD_SIDEBAR_COLLAPSED_STORAGE_KEY, String(dashboardSidebarCollapsed));
+  }, [dashboardSidebarCollapsed]);
+
+  React.useEffect(() => {
+    window.localStorage.setItem(DASHBOARD_SIDEBAR_WIDTH_STORAGE_KEY, String(dashboardSidebarWidth));
+  }, [dashboardSidebarWidth]);
+
+  React.useEffect(() => {
+    window.localStorage.setItem(DASHBOARD_ACTIVITY_WIDTH_STORAGE_KEY, String(dashboardActivityWidth));
+  }, [dashboardActivityWidth]);
+
+  const stopDashboardResize = React.useCallback(() => {
+    resizeSessionRef.current = null;
+    document.body.classList.remove("ilm-resizing-panels");
+  }, []);
+
+  const startDashboardResize = React.useCallback(
+    (kind: "sidebar" | "activity", event: React.PointerEvent<HTMLButtonElement>) => {
+      if (event.button !== 0) return;
+
+      event.preventDefault();
+
+      if (kind === "sidebar" && dashboardSidebarCollapsed) {
+        setDashboardSidebarCollapsed(false);
+      }
+
+      resizeSessionRef.current = {
+        kind,
+        startX: event.clientX,
+        startWidth: kind === "sidebar" ? dashboardSidebarWidth : dashboardActivityWidth
+      };
+
+      document.body.classList.add("ilm-resizing-panels");
+
+      const handlePointerMove = (pointerEvent: PointerEvent) => {
+        const session = resizeSessionRef.current;
+        if (!session || session.kind !== kind || pointerEvent.pointerId !== event.pointerId) return;
+
+        if (kind === "sidebar") {
+          const maximum = Math.max(
+            DASHBOARD_SIDEBAR_WIDTH_MIN,
+            Math.min(DASHBOARD_SIDEBAR_WIDTH_MAX, window.innerWidth - 640)
+          );
+          const nextWidth = clamp(
+            session.startWidth + (pointerEvent.clientX - session.startX),
+            DASHBOARD_SIDEBAR_WIDTH_MIN,
+            maximum
+          );
+          setDashboardSidebarWidth(nextWidth);
+        } else {
+          const maximum = Math.max(
+            DASHBOARD_ACTIVITY_WIDTH_MIN,
+            Math.min(DASHBOARD_ACTIVITY_WIDTH_MAX, window.innerWidth - 560)
+          );
+          const nextWidth = clamp(
+            session.startWidth - (pointerEvent.clientX - session.startX),
+            DASHBOARD_ACTIVITY_WIDTH_MIN,
+            maximum
+          );
+          setDashboardActivityWidth(nextWidth);
+        }
+      };
+
+      const handlePointerUp = (pointerEvent: PointerEvent) => {
+        if (pointerEvent.pointerId !== event.pointerId) return;
+
+        window.removeEventListener("pointermove", handlePointerMove);
+        window.removeEventListener("pointerup", handlePointerUp);
+        window.removeEventListener("pointercancel", handlePointerUp);
+        stopDashboardResize();
+      };
+
+      window.addEventListener("pointermove", handlePointerMove);
+      window.addEventListener("pointerup", handlePointerUp);
+      window.addEventListener("pointercancel", handlePointerUp);
+    },
+    [dashboardActivityWidth, dashboardSidebarCollapsed, dashboardSidebarWidth, stopDashboardResize]
+  );
+
+  const dashboardSidebarWidthValue = dashboardSidebarCollapsed
+    ? DASHBOARD_SIDEBAR_WIDTH_COLLAPSED
+    : dashboardSidebarWidth;
+
+  React.useEffect(() => {
+    return () => stopDashboardResize();
+  }, [stopDashboardResize]);
+
   React.useEffect(() => {
     if (authSession?.userToken && !state.repository && !state.availableRepositories) {
       loadRepositories(authSession.userToken);
@@ -1237,40 +1450,77 @@ function CmsApplication() {
 
   return (
     <div className="min-h-screen bg-zinc-50 text-zinc-950">
-      <div className="grid min-h-screen grid-cols-1 lg:grid-cols-[270px_1fr]">
-        <aside className="border-r border-zinc-200 bg-white">
-          <div className="flex items-center gap-3 border-b border-zinc-200 px-5 py-4">
-            <div className="flex h-9 w-9 items-center justify-center rounded-md bg-zinc-950 text-sm font-semibold text-white">
-              Ilm
+      <div
+        className="grid min-h-screen grid-cols-1 lg:min-h-screen lg:[grid-template-columns:var(--ilm-dashboard-sidebar-width)_minmax(0,1fr)]"
+        style={{
+          ["--ilm-dashboard-sidebar-width" as string]: `${dashboardSidebarWidthValue}px`
+        }}
+      >
+        <aside className="relative border-r border-zinc-200 bg-white">
+          <div className="flex items-center justify-between gap-3 border-b border-zinc-200 px-5 py-4">
+            <div className="flex min-w-0 items-center gap-3">
+              <div className="flex h-9 w-9 items-center justify-center rounded-md bg-zinc-950 text-sm font-semibold text-white">
+                Ilm
+              </div>
+              <div className={dashboardSidebarCollapsed ? "lg:sr-only" : ""}>
+                <p className="text-sm font-semibold">Ilm</p>
+                <p className="text-xs text-zinc-500">Git-native publishing</p>
+              </div>
             </div>
-            <div>
-              <p className="text-sm font-semibold">Ilm</p>
-              <p className="text-xs text-zinc-500">Git-native publishing</p>
-            </div>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="hidden shrink-0 lg:inline-flex"
+              onClick={() => setDashboardSidebarCollapsed((current) => !current)}
+            >
+              {dashboardSidebarCollapsed ? "Expand" : "Collapse"}
+            </Button>
           </div>
           <nav aria-label="Primary" className="space-y-1 p-3">
             {navItems.map((item) => (
               <NavLink
                 key={item.href}
                 to={item.href}
+                title={dashboardSidebarCollapsed ? item.label : undefined}
+                aria-label={item.label}
                 className={({ isActive }) =>
                   [
-                    "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium",
+                    "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
+                    dashboardSidebarCollapsed ? "lg:justify-center lg:px-2" : "",
                     isActive ? "bg-zinc-950 text-white" : "text-zinc-700 hover:bg-zinc-100"
                   ].join(" ")
                 }
               >
-                <item.icon aria-hidden="true" className="h-4 w-4" />
-                {item.label}
+                <item.icon aria-hidden="true" className="h-4 w-4 shrink-0" />
+                <span className={dashboardSidebarCollapsed ? "lg:sr-only" : ""}>{item.label}</span>
               </NavLink>
             ))}
           </nav>
-          <div className="border-t border-zinc-200 p-4 text-xs text-zinc-600">
+          <div
+            className={[
+              "border-t border-zinc-200 p-4 text-xs text-zinc-600",
+              dashboardSidebarCollapsed ? "hidden lg:block" : ""
+            ].join(" ")}
+          >
             <p className="font-medium text-zinc-900">Repository</p>
             <p className="mt-1 break-words">{state.repository?.fullName ?? "Not connected"}</p>
           </div>
+          <button
+            type="button"
+            aria-label="Resize sidebar"
+            onPointerDown={(event) => startDashboardResize("sidebar", event)}
+            className="absolute right-0 top-0 hidden h-full w-4 cursor-col-resize touch-none items-center justify-center border-l border-transparent text-zinc-300 hover:border-zinc-200 hover:bg-zinc-50 hover:text-zinc-900 lg:flex"
+          >
+            <GripVertical className="h-4 w-4" />
+          </button>
         </aside>
-        <main className="min-w-0 relative">
+        <main
+          className="min-w-0 relative"
+          style={{
+            ["--ilm-dashboard-activity-width" as string]: `${dashboardActivityWidth}px`
+          }}
+        >
           {status && status !== "Ready" && (
             <div
               role="status"
@@ -1314,6 +1564,8 @@ function CmsApplication() {
                   onSelectRepository={selectRepository}
                   onDisconnectRepository={disconnectRepository}
                   onConfigureRepositories={handleConfigureRepositories}
+                  dashboardActivityWidth={dashboardActivityWidth}
+                  onActivityResizeStart={(event) => startDashboardResize("activity", event)}
                 />
               }
             />
@@ -1358,12 +1610,16 @@ function CmsApplication() {
             />
             <Route
               path="/posts"
+              element={<Navigate to="/blogs" replace />}
+            />
+            <Route
+              path="/blogs"
               element={
                 repositoryConnected ? (
-                  <ListPage title="Posts" items={state.posts} connected={repositoryConnected} />
+                  <ListPage title="Blogs" items={state.posts} connected={repositoryConnected} />
                 ) : (
                   <AuthRequiredPage
-                    pageName="Posts"
+                    pageName="Blogs"
                     authStatus={authStatus}
                     authMessage={authMessage}
                     onConnect={handleConnectGitHub}
@@ -1511,7 +1767,9 @@ function Dashboard({
   onRefreshAccess,
   onSelectRepository,
   onDisconnectRepository,
-  onConfigureRepositories
+  onConfigureRepositories,
+  dashboardActivityWidth,
+  onActivityResizeStart
 }: {
   readonly state: CmsState;
   readonly status: string;
@@ -1528,6 +1786,8 @@ function Dashboard({
   readonly onSelectRepository: (repoId: number) => void;
   readonly onDisconnectRepository: () => void;
   readonly onConfigureRepositories: () => void;
+  readonly dashboardActivityWidth: number;
+  readonly onActivityResizeStart: (event: React.PointerEvent<HTMLButtonElement>) => void;
 }) {
   return (
     <>
@@ -1535,7 +1795,7 @@ function Dashboard({
         title="Dashboard"
         description="Connect a user-owned GitHub repository, continue writing, and monitor publishing status."
       />
-      <section className="grid gap-4 p-6 lg:grid-cols-4">
+      <section className="grid gap-4 p-6 sm:grid-cols-2 xl:grid-cols-4">
         <StatusCard
           title="Repository"
           value={state.repository?.fullName ?? "Not connected"}
@@ -1566,7 +1826,10 @@ function Dashboard({
           icon={<UploadCloud />}
         />
       </section>
-      <section className="grid gap-4 px-6 pb-6 lg:grid-cols-[1fr_360px]">
+      <section
+        className="grid gap-4 px-6 pb-6 lg:[grid-template-columns:minmax(0,1fr)_12px_var(--ilm-dashboard-activity-width)]"
+        style={{ ["--ilm-dashboard-activity-width" as string]: `${dashboardActivityWidth}px` }}
+      >
         <div className="rounded-md border border-zinc-200 bg-white p-5">
           <h2 className="text-lg font-semibold">Publishing activity</h2>
           <div className="mt-4 space-y-3">
@@ -1584,7 +1847,16 @@ function Dashboard({
             )}
           </div>
         </div>
-        <AuthSetupPanel
+        <button
+          type="button"
+          aria-label="Resize activity panel"
+          onPointerDown={onActivityResizeStart}
+          className="hidden h-full w-3 cursor-col-resize touch-none items-center justify-center rounded-full border border-zinc-200 bg-white text-zinc-300 hover:text-zinc-950 lg:flex"
+        >
+          <GripVertical className="h-4 w-4" />
+        </button>
+        <div className="min-w-0">
+          <AuthSetupPanel
           authStatus={authStatus}
           authMessage={authMessage}
           authSession={authSession}
@@ -1598,7 +1870,8 @@ function Dashboard({
           onRefreshAccess={onRefreshAccess}
           onDisconnectRepository={onDisconnectRepository}
           onConfigureRepositories={onConfigureRepositories}
-        />
+          />
+        </div>
       </section>
     </>
   );
@@ -2034,7 +2307,7 @@ function EditorPage({
   readonly onAddMedia: (media: Omit<MediaRecord, "id">) => void;
 }) {
   const postDestinationUrl = siteHomeUrl
-    ? `${siteHomeUrl.replace(/\/$/, "")}/posts/${draft.slug}/`
+    ? `${siteHomeUrl.replace(/\/$/, "")}/blogs/${draft.slug}/`
     : "";
   const publishDisabled =
     !connected ||
@@ -2138,7 +2411,7 @@ function EditorPage({
       />
       <section className="grid gap-4 p-6 xl:grid-cols-[1fr_360px]">
         <div className="space-y-4">
-          <Panel title="Post details">
+          <Panel title="Blog details">
             <div className="grid gap-3 md:grid-cols-2">
               <Field label="Title">
                 <input
@@ -2192,7 +2465,7 @@ function EditorPage({
                     <h2 className="text-sm font-semibold text-blue-950">Set Up Blog Site</h2>
                     <p className="mt-1 text-sm text-blue-800">
                       This repository needs the Astro blog files and GitHub Pages workflow before a
-                      post can go live.
+                      blog can go live.
                     </p>
                     <Button
                       type="button"
@@ -2240,7 +2513,7 @@ function EditorPage({
                   onClick={() => window.open(livePostUrl, "_blank")}
                   className="bg-green-600 hover:bg-green-700 text-white"
                 >
-                  View Live Post <Sparkles className="ml-2 h-4 w-4" />
+                  View Live Blog <Sparkles className="ml-2 h-4 w-4" />
                 </Button>
               )}
             </div>
@@ -2276,10 +2549,20 @@ function EditorPage({
                   </a>
                 </div>
               )}
+              {staticSiteReady && (
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={onInitializeTemplate}
+                  disabled={isInitializingTemplate}
+                >
+                  {isInitializingTemplate ? "Repairing setup..." : "Repair setup files"}
+                </Button>
+              )}
               {(livePostUrl || postDestinationUrl) && (
                 <div>
                   <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
-                    Live post URL
+                    Live blog URL
                   </p>
                   <a
                     href={livePostUrl || postDestinationUrl}
@@ -2572,12 +2855,12 @@ function SearchPage({
 
   return (
     <>
-      <PageHeader title="Search" description="Search through your posts and drafts." />
+      <PageHeader title="Search" description="Search through your blogs and drafts." />
       <section className="p-6">
         <Panel title="Search content">
           <input
             aria-label="Search content"
-            placeholder="Search posts and drafts"
+            placeholder="Search blogs and drafts"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
           />

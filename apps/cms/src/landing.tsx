@@ -138,7 +138,7 @@ export function LandingPage({ onConnectGitHub }: { readonly onConnectGitHub: () 
             <FeatureCard
               icon={<Rocket className="w-6 h-6 text-pink-400" />}
               title="One-Click Publish"
-              description="Saves become commits. Publishing moves files from drafts to posts automatically."
+              description="Saves become commits. Publishing moves files from drafts to blogs automatically."
             />
             <FeatureCard
               icon={<Search className="w-6 h-6 text-green-400" />}
@@ -186,7 +186,7 @@ export function LandingPage({ onConnectGitHub }: { readonly onConnectGitHub: () 
             <Step
               number="03"
               title="Publish & Deploy"
-              description="Hit publish. Ilm moves the markdown file to your posts directory. Your CI/CD (like GitHub Actions or Vercel) automatically builds and deploys your static site."
+              description="Hit publish. Ilm moves the markdown file to your blog content directory. GitHub Actions builds and deploys your static site."
             />
           </div>
         </div>

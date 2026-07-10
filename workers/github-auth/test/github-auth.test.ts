@@ -193,6 +193,19 @@ describe("@ilm/github-auth worker", () => {
       token: "inst_token",
       expiresAt: "2026-07-08T10:00:00Z"
     });
+    expect(mockFetch).toHaveBeenCalledWith(
+      "https://api.github.com/app/installations/9876/access_tokens",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          permissions: {
+            contents: "write",
+            actions: "read",
+            metadata: "read"
+          }
+        })
+      })
+    );
 
     vi.unstubAllGlobals();
   });
@@ -223,6 +236,101 @@ describe("@ilm/github-auth worker", () => {
     );
 
     expect(response.status).toBe(403);
+    vi.unstubAllGlobals();
+  });
+
+  it("returns actionable details when GitHub rejects installation token permissions", async () => {
+    const env: Env = {
+      GITHUB_APP_ID: "12345",
+      GITHUB_APP_PRIVATE_KEY: mockPrivateKeyPem,
+      ALLOWED_ORIGIN: "http://localhost:5173"
+    };
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation((url: string) => {
+        if (url.includes("user/installations")) {
+          return Promise.resolve(
+            new Response(JSON.stringify({ installations: [{ id: 9876 }] }), { status: 200 })
+          );
+        }
+        if (url.includes("access_tokens")) {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({
+                message: "Validation Failed",
+                errors: [{ message: "The permissions requested are not granted to this app" }]
+              }),
+              { status: 422 }
+            )
+          );
+        }
+        return Promise.resolve(new Response("{}"));
+      })
+    );
+
+    const response = await worker.fetch(
+      new Request("https://auth.ilm.dev/github/app/installation-token", {
+        method: "POST",
+        headers: { Authorization: "Bearer user_token" },
+        body: JSON.stringify({ installationId: 9876 })
+      }),
+      env
+    );
+
+    expect(response.status).toBe(422);
+    expect(await response.json()).toEqual({
+      error: "GitHub App permissions are not approved for this installation",
+      details:
+        "Validation Failed: The permissions requested are not granted to this app",
+      requiredPermissions: ["Contents: write", "Actions: read"]
+    });
+    vi.unstubAllGlobals();
+  });
+
+  it("requests elevated Pages permissions only for setup tokens", async () => {
+    const env: Env = {
+      GITHUB_APP_ID: "12345",
+      GITHUB_APP_PRIVATE_KEY: mockPrivateKeyPem,
+      ALLOWED_ORIGIN: "http://localhost:5173"
+    };
+
+    const mockFetch = vi.fn().mockImplementation((url: string) => {
+      if (url.includes("user/installations")) {
+        return Promise.resolve(new Response(JSON.stringify({ installations: [{ id: 9876 }] })));
+      }
+      if (url.includes("access_tokens")) {
+        return Promise.resolve(new Response(JSON.stringify({ token: "setup_token" })));
+      }
+      return Promise.resolve(new Response("{}"));
+    });
+    vi.stubGlobal("fetch", mockFetch);
+
+    await worker.fetch(
+      new Request("https://auth.ilm.dev/github/app/installation-token", {
+        method: "POST",
+        headers: { Authorization: "Bearer user_token" },
+        body: JSON.stringify({ installationId: 9876, purpose: "pages-setup" })
+      }),
+      env
+    );
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      "https://api.github.com/app/installations/9876/access_tokens",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          permissions: {
+            contents: "write",
+            actions: "read",
+            workflows: "write",
+            pages: "write",
+            administration: "write",
+            metadata: "read"
+          }
+        })
+      })
+    );
     vi.unstubAllGlobals();
   });
 

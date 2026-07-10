@@ -1,11 +1,10 @@
 ---
-import { fileURLToPath } from "node:url";
 import { readFile } from "node:fs/promises";
+import { getSeoConfigPath } from "../template/posts";
 
 let googleAnalyticsId: string | undefined = undefined;
 try {
-  const configPath = fileURLToPath(new URL("../../../config/seo.ts", import.meta.url));
-  const content = await readFile(configPath, "utf-8");
+  const content = await readFile(getSeoConfigPath(), "utf-8");
   const match = content.match(/googleAnalyticsId:\s*["']([^"']+)["']/);
   if (match && match[1]) {
     googleAnalyticsId = match[1];
@@ -51,7 +50,7 @@ try {
       <h1>Search</h1>
       <a href="/">← Back Home</a>
       <br><br>
-      <input type="search" id="search-input" placeholder="Search posts..." autofocus />
+      <input type="search" id="search-input" placeholder="Search blogs..." autofocus />
       
       <div id="loading" style="margin-top: 1rem; color: #666;">Loading index...</div>
       <ul id="search-results" class="results"></ul>
@@ -93,7 +92,7 @@ try {
             
             resultsContainer.innerHTML = matches.map(post => `
               <li>
-                <a href="/posts/${post.slug}/">
+                <a href="/blogs/${post.slug}/">
                   ${post.title}
                   ${post.isDraft ? '<span class="draft-badge">Draft</span>' : ''}
                 </a>

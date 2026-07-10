@@ -92,7 +92,7 @@ test("shows setup for a connected repository without a static site", async ({ pa
   await expect(page.getByRole("button", { name: "Set up site to publish" })).toBeDisabled();
 });
 
-test("shows live post destination for a repository with GitHub Pages", async ({ page }) => {
+test("shows live blog destination for a repository with GitHub Pages", async ({ page }) => {
   await page.addInitScript(() => {
     window.sessionStorage.setItem(
       "ilm.auth.session",
@@ -153,7 +153,9 @@ test("shows live post destination for a repository with GitHub Pages", async ({ 
             { path: "config/site.ts", type: "blob" },
             { path: "config/seo.ts", type: "blob" },
             { path: "config/navigation.ts", type: "blob" },
-            { path: ".github/workflows", type: "tree" }
+            { path: "src/pages/blogs/[slug].astro", type: "blob" },
+            { path: ".github/workflows", type: "tree" },
+            { path: ".github/workflows/deploy.yml", type: "blob" }
           ]
         }
       });
@@ -178,10 +180,10 @@ test("shows live post destination for a repository with GitHub Pages", async ({ 
 
   await page.goto("/editor");
 
-  await expect(page.getByText("Live post URL")).toBeVisible();
+  await expect(page.getByText("Live blog URL")).toBeVisible();
   await expect(
     page.getByRole("link", {
-      name: "https://ij-roy.github.io/ilm-test-blog/posts/own-your-publishing-workflow/"
+      name: "https://ij-roy.github.io/ilm-test-blog/blogs/own-your-publishing-workflow/"
     })
   ).toBeVisible();
   await expect(page.getByRole("button", { name: /Publish/ })).toBeVisible();

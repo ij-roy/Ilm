@@ -26,6 +26,15 @@ describe("@ilm/cms", () => {
     ).toBeInTheDocument();
   });
 
+  it("exposes dashboard controls for resizing and collapsing the panels", () => {
+    window.history.pushState({}, "Test", "/dashboard");
+    render(<App />);
+
+    expect(screen.getByRole("button", { name: "Collapse" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Resize sidebar" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Resize activity panel" })).toBeInTheDocument();
+  });
+
   it("protects editor route before authentication", () => {
     window.history.pushState({}, "Test", "/editor");
     render(<App />);
@@ -92,16 +101,24 @@ describe("@ilm/cms", () => {
     expect(screen.getByRole("button", { name: "Set up site to publish" })).toBeDisabled();
   });
 
-  it("shows the verified live post URL after publishing", async () => {
+  it("shows the verified live blog URL after publishing", async () => {
     seedConnectedRepositorySession({ siteHomeUrl: "https://owner.github.io/repo/" });
     window.history.pushState({}, "Test", "/editor");
-    vi.stubGlobal("fetch", createRepositoryFetchMock(["package.json", "astro.config.mjs"]));
+    vi.stubGlobal(
+      "fetch",
+      createRepositoryFetchMock([
+        "package.json",
+        "astro.config.mjs",
+        "src/pages/blogs/[slug].astro",
+        ".github/workflows/deploy.yml"
+      ])
+    );
 
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: "Editor" })).toBeInTheDocument();
-    expect(await screen.findByText("Live post URL")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "https://owner.github.io/repo/posts/own-your-publishing-workflow/" })).toBeInTheDocument();
+    expect(await screen.findByText("Live blog URL")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "https://owner.github.io/repo/blogs/own-your-publishing-workflow/" })).toBeInTheDocument();
   });
 });
 

@@ -2,7 +2,7 @@ User-agent: *
 Allow: /
 Disallow: /dashboard
 Disallow: /editor
-Disallow: /posts
+Disallow: /blogs
 Disallow: /drafts
 Disallow: /media
 Disallow: /search

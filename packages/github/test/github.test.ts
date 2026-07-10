@@ -5,10 +5,23 @@ const octokitMock = {
     listInstallationsForAuthenticatedUser: vi.fn(),
     listInstallationReposForAuthenticatedUser: vi.fn()
   },
+  git: {
+    getTree: vi.fn(),
+    getBlob: vi.fn(),
+    getRef: vi.fn(),
+    getCommit: vi.fn(),
+    createBlob: vi.fn(),
+    createTree: vi.fn(),
+    createCommit: vi.fn(),
+    updateRef: vi.fn()
+  },
   repos: {
     getPages: vi.fn(),
     createPagesSite: vi.fn(),
-    updateInformationAboutPagesSite: vi.fn()
+    updateInformationAboutPagesSite: vi.fn(),
+    getContent: vi.fn(),
+    createOrUpdateFileContents: vi.fn(),
+    deleteFile: vi.fn()
   },
   actions: {
     listWorkflowRunsForRepo: vi.fn(),
@@ -193,11 +206,206 @@ describe("@ilm/github", () => {
       "publish-sha"
     );
 
+    expect(octokitMock.actions.listWorkflowRunsForRepo).toHaveBeenCalledWith({
+      owner: "owner",
+      repo: "repo",
+      branch: "main",
+      head_sha: "publish-sha",
+      per_page: 20
+    });
     expect(octokitMock.actions.getWorkflowRun).toHaveBeenCalledWith({
       owner: "owner",
       repo: "repo",
       run_id: 2
     });
     expect(status).toBe("completed");
+  });
+
+  it("reports when no workflow run exists for the publish commit", async () => {
+    octokitMock.actions.listWorkflowRunsForRepo.mockResolvedValueOnce({
+      data: {
+        workflow_runs: [{ id: 1, head_sha: "other-sha", status: "completed", conclusion: "success" }]
+      }
+    });
+
+    const client = new GitHubClient("installation-token");
+    const status = await client.getWorkflowStatusForCommit(
+      { owner: "owner", repo: "repo", branch: "main" },
+      "publish-sha"
+    );
+
+    expect(octokitMock.actions.listWorkflowRunsForRepo).toHaveBeenCalledWith({
+      owner: "owner",
+      repo: "repo",
+      branch: "main",
+      head_sha: "publish-sha",
+      per_page: 20
+    });
+    expect(status).toBe("not_found");
+    expect(octokitMock.actions.getWorkflowRun).not.toHaveBeenCalled();
+  });
+
+  it("falls back to contents writes when Git Data writes are blocked for normal content commits", async () => {
+    octokitMock.git.getRef.mockResolvedValueOnce({ data: { object: { sha: "base-sha" } } });
+    octokitMock.git.getCommit.mockResolvedValueOnce({ data: { tree: { sha: "tree-sha" } } });
+    octokitMock.git.createBlob.mockResolvedValue({ data: { sha: "new-blob-sha" } });
+    octokitMock.repos.getContent.mockRejectedValue({ status: 404 });
+    octokitMock.git.createTree.mockRejectedValueOnce({
+      status: 403,
+      message: "Resource not accessible by integration"
+    });
+    octokitMock.repos.createOrUpdateFileContents.mockResolvedValue({
+      data: { commit: { sha: "contents-sha" } }
+    });
+
+    const client = new GitHubClient("installation-token");
+    const result = await client.executeCommit({
+      owner: "owner",
+      repo: "repo",
+      branch: "main",
+      message: "Publish blog",
+      files: [{ path: "content/posts/hello.md", content: "# Hello", encoding: "utf-8" }]
+    });
+
+    expect(result.sha).toBe("contents-sha");
+    expect(octokitMock.repos.createOrUpdateFileContents).toHaveBeenCalledWith(
+      expect.objectContaining({
+        owner: "owner",
+        repo: "repo",
+        branch: "main",
+        path: "content/posts/hello.md",
+        message: "Publish blog"
+      })
+    );
+  });
+
+  it("reports missing Workflows permission when template setup cannot create the deploy workflow", async () => {
+    octokitMock.git.getTree.mockResolvedValueOnce({
+      data: {
+        tree: [{ path: "templates/astro-blog/package.json", type: "blob", sha: "blob-sha" }]
+      }
+    });
+    octokitMock.git.getBlob.mockResolvedValueOnce({
+      data: { content: btoa("{}") }
+    });
+    octokitMock.git.getRef.mockResolvedValueOnce({ data: { object: { sha: "base-sha" } } });
+    octokitMock.git.getCommit.mockResolvedValueOnce({ data: { tree: { sha: "tree-sha" } } });
+    octokitMock.git.createBlob.mockResolvedValue({ data: { sha: "new-blob-sha" } });
+    octokitMock.repos.getContent.mockRejectedValue({ status: 404 });
+    octokitMock.git.createTree.mockRejectedValueOnce({
+      status: 403,
+      message: "Resource not accessible by integration"
+    });
+    octokitMock.repos.createOrUpdateFileContents.mockImplementation(({ path }) => {
+      if (path === ".github/workflows/deploy.yml") {
+        return Promise.reject({
+          status: 403,
+          message: "Workflow does not have write permission"
+        });
+      }
+      return Promise.resolve({ data: { commit: { sha: "contents-sha" } } });
+    });
+
+    const client = new GitHubClient("installation-token");
+    await expect(
+      client.initializeAstroTemplate({
+        owner: "owner",
+        repo: "repo",
+        branch: "main"
+      })
+    ).rejects.toThrow("Repository needs GitHub App Workflows permission");
+  });
+
+  it("commits a standalone tsconfig when initializing a user blog repo", async () => {
+    octokitMock.git.getTree.mockResolvedValueOnce({
+      data: {
+        tree: [{ path: "templates/astro-blog/tsconfig.json", type: "blob", sha: "tsconfig-sha" }]
+      }
+    });
+    octokitMock.git.getBlob.mockResolvedValueOnce({
+      data: {
+        content: btoa('{"extends":"../../tsconfig.base.json","include":["src"]}')
+      }
+    });
+    octokitMock.git.getRef.mockResolvedValueOnce({ data: { object: { sha: "base-sha" } } });
+    octokitMock.git.getCommit.mockResolvedValueOnce({ data: { tree: { sha: "tree-sha" } } });
+    octokitMock.git.createBlob.mockResolvedValue({ data: { sha: "new-blob-sha" } });
+    octokitMock.git.createTree.mockResolvedValueOnce({ data: { sha: "new-tree-sha" } });
+    octokitMock.git.createCommit.mockResolvedValueOnce({ data: { sha: "commit-sha" } });
+    octokitMock.git.updateRef.mockResolvedValueOnce({});
+
+    const client = new GitHubClient("installation-token");
+    await client.initializeAstroTemplate({
+      owner: "owner",
+      repo: "repo",
+      branch: "main"
+    });
+
+    const createTreeCall = octokitMock.git.createTree.mock.calls[0]?.[0];
+    const tsconfigEntry = createTreeCall.tree.find(
+      (entry: { readonly path?: string }) => entry.path === "tsconfig.json"
+    );
+
+    expect(tsconfigEntry.content).toContain('"moduleResolution": "Bundler"');
+    expect(tsconfigEntry.content).not.toContain("../../tsconfig.base.json");
+  });
+
+  it("does not try browser Contents fallback when Git Data cannot write a workflow file", async () => {
+    octokitMock.git.getTree.mockResolvedValueOnce({
+      data: {
+        tree: [{ path: "templates/astro-blog/package.json", type: "blob", sha: "blob-sha" }]
+      }
+    });
+    octokitMock.git.getBlob.mockResolvedValueOnce({
+      data: { content: btoa("{}") }
+    });
+    octokitMock.git.getRef.mockResolvedValueOnce({ data: { object: { sha: "base-sha" } } });
+    octokitMock.git.getCommit.mockResolvedValueOnce({ data: { tree: { sha: "tree-sha" } } });
+    octokitMock.git.createBlob.mockResolvedValue({ data: { sha: "new-blob-sha" } });
+    octokitMock.git.createTree.mockRejectedValueOnce({
+      status: 403,
+      message: "Resource not accessible by integration"
+    });
+
+    const client = new GitHubClient("installation-token");
+    await expect(
+      client.initializeAstroTemplate({
+        owner: "owner",
+        repo: "repo",
+        branch: "main"
+      })
+    ).rejects.toThrow("Repository needs GitHub App Workflows permission");
+    expect(octokitMock.repos.createOrUpdateFileContents).not.toHaveBeenCalled();
+  });
+
+  it("retries Git Data commits when the branch moves before ref update", async () => {
+    octokitMock.git.getRef
+      .mockResolvedValueOnce({ data: { object: { sha: "old-base-sha" } } })
+      .mockResolvedValueOnce({ data: { object: { sha: "new-base-sha" } } });
+    octokitMock.git.getCommit
+      .mockResolvedValueOnce({ data: { tree: { sha: "old-tree-sha" } } })
+      .mockResolvedValueOnce({ data: { tree: { sha: "new-tree-sha" } } });
+    octokitMock.git.createTree
+      .mockResolvedValueOnce({ data: { sha: "first-tree-sha" } })
+      .mockResolvedValueOnce({ data: { sha: "second-tree-sha" } });
+    octokitMock.git.createCommit
+      .mockResolvedValueOnce({ data: { sha: "first-commit-sha" } })
+      .mockResolvedValueOnce({ data: { sha: "second-commit-sha" } });
+    octokitMock.git.updateRef
+      .mockRejectedValueOnce({ status: 422, message: "Update is not a fast forward" })
+      .mockResolvedValueOnce({});
+
+    const client = new GitHubClient("installation-token");
+    const result = await client.executeCommit({
+      owner: "owner",
+      repo: "repo",
+      branch: "main",
+      message: "publish: retry",
+      files: [{ path: "content/posts/retry.md", content: "# Retry", encoding: "utf-8" }]
+    });
+
+    expect(result.sha).toBe("second-commit-sha");
+    expect(octokitMock.git.updateRef).toHaveBeenCalledTimes(2);
+    expect(octokitMock.git.getRef).toHaveBeenCalledTimes(2);
   });
 });

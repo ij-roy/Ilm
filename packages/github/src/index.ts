@@ -20,7 +20,7 @@ export type GitHubCommitRequest = GitHubRepositoryRef & {
   readonly files: readonly GitHubFileWrite[];
 };
 
-export type GitHubWorkflowStatus = "queued" | "in_progress" | "completed" | "failed";
+export type GitHubWorkflowStatus = "not_found" | "queued" | "in_progress" | "completed" | "failed";
 
 export type GitHubPagesSite = {
   readonly htmlUrl: string;
@@ -142,95 +142,205 @@ export class GitHubClient {
   }
 
   async executeCommit(request: GitHubCommitRequest): Promise<GitHubCommitResult> {
-    const branchRef = await this.octokit.git.getRef({
-      owner: request.owner,
-      repo: request.repo,
-      ref: `heads/${request.branch}`
-    });
-    const baseCommitSha = branchRef.data.object.sha;
-    const baseCommit = await this.octokit.git.getCommit({
-      owner: request.owner,
-      repo: request.repo,
-      commit_sha: baseCommitSha
-    });
+    return this.executeGitDataCommit(request, 2);
+  }
 
-    const tree = await this.octokit.git.createTree({
-      owner: request.owner,
-      repo: request.repo,
-      base_tree: baseCommit.data.tree.sha,
-      tree: (
-        await Promise.all(
-          request.files.map(async (file) => {
-            if (file.operation === "delete") {
-              try {
-                // Verify the file exists in the branch before attempting to delete
-                await this.octokit.repos.getContent({
+  private async executeGitDataCommit(
+    request: GitHubCommitRequest,
+    remainingFastForwardRetries: number
+  ): Promise<GitHubCommitResult> {
+    try {
+      const branchRef = await this.octokit.git.getRef({
+        owner: request.owner,
+        repo: request.repo,
+        ref: `heads/${request.branch}`
+      });
+      const baseCommitSha = branchRef.data.object.sha;
+      const baseCommit = await this.octokit.git.getCommit({
+        owner: request.owner,
+        repo: request.repo,
+        commit_sha: baseCommitSha
+      });
+
+      const tree = await this.octokit.git.createTree({
+        owner: request.owner,
+        repo: request.repo,
+        base_tree: baseCommit.data.tree.sha,
+        tree: (
+          await Promise.all(
+            request.files.map(async (file) => {
+              if (file.operation === "delete") {
+                try {
+                  // Verify the file exists in the branch before attempting to delete
+                  await this.octokit.repos.getContent({
+                    owner: request.owner,
+                    repo: request.repo,
+                    path: file.path,
+                    ref: request.branch
+                  });
+                  return {
+                    path: file.path,
+                    mode: "100644" as const,
+                    type: "blob" as const,
+                    sha: null
+                  };
+                } catch (err: unknown) {
+                  // If the file is not found (404), it's already deleted or never existed.
+                  if (isGitHubStatusError(err, 404)) {
+                    return null;
+                  }
+                  throw err;
+                }
+              }
+
+              if (file.encoding === "base64") {
+                const blob = await this.octokit.git.createBlob({
                   owner: request.owner,
                   repo: request.repo,
-                  path: file.path,
-                  ref: request.branch
+                  content: file.content,
+                  encoding: "base64"
                 });
+
                 return {
                   path: file.path,
                   mode: "100644" as const,
                   type: "blob" as const,
-                  sha: null
+                  sha: blob.data.sha
                 };
-              } catch (err: unknown) {
-                // If the file is not found (404), it's already deleted or never existed.
-                if (isGitHubStatusError(err, 404)) {
-                  return null;
-                }
-                throw err;
               }
-            }
-
-            if (file.encoding === "base64") {
-              const blob = await this.octokit.git.createBlob({
-                owner: request.owner,
-                repo: request.repo,
-                content: file.content,
-                encoding: "base64"
-              });
 
               return {
                 path: file.path,
                 mode: "100644" as const,
                 type: "blob" as const,
-                sha: blob.data.sha
+                content: file.content
               };
-            }
+            })
+          )
+        ).filter((item): item is NonNullable<typeof item> => item !== null)
+      });
 
-            return {
-              path: file.path,
-              mode: "100644" as const,
-              type: "blob" as const,
-              content: file.content
-            };
-          })
-        )
-      ).filter((item): item is NonNullable<typeof item> => item !== null)
-    });
+      const commit = await this.octokit.git.createCommit({
+        owner: request.owner,
+        repo: request.repo,
+        message: request.message,
+        tree: tree.data.sha,
+        parents: [baseCommitSha]
+      });
 
-    const commit = await this.octokit.git.createCommit({
-      owner: request.owner,
-      repo: request.repo,
-      message: request.message,
-      tree: tree.data.sha,
-      parents: [baseCommitSha]
-    });
+      await this.octokit.git.updateRef({
+        owner: request.owner,
+        repo: request.repo,
+        ref: `heads/${request.branch}`,
+        sha: commit.data.sha
+      });
 
-    await this.octokit.git.updateRef({
-      owner: request.owner,
-      repo: request.repo,
-      ref: `heads/${request.branch}`,
-      sha: commit.data.sha
-    });
+      return {
+        sha: commit.data.sha,
+        fileCount: request.files.length
+      };
+    } catch (error: unknown) {
+      if (isFastForwardUpdateError(error) && remainingFastForwardRetries > 0) {
+        return this.executeGitDataCommit(request, remainingFastForwardRetries - 1);
+      }
+      if (isResourceNotAccessibleByIntegration(error)) {
+        if (requestContainsWorkflowFile(request)) {
+          throw new Error(
+            "Repository needs GitHub App Workflows permission. Configure the GitHub App with Workflows: Read and write, approve the updated installation, redeploy the auth worker, reconnect this repository, then run Set Up Blog Site again.",
+            { cause: error }
+          );
+        }
+        return this.executeCommitWithContentsApi(request);
+      }
+      throw error;
+    }
+  }
 
-    return {
-      sha: commit.data.sha,
-      fileCount: request.files.length
-    };
+  private async executeCommitWithContentsApi(
+    request: GitHubCommitRequest
+  ): Promise<GitHubCommitResult> {
+    let latestSha = "";
+    let changedFiles = 0;
+
+    try {
+      for (const file of request.files) {
+        const existingSha = await this.getRepositoryFileSha(request, file.path);
+
+        if (file.operation === "delete") {
+          if (!existingSha) continue;
+          const response = await this.octokit.repos.deleteFile({
+            owner: request.owner,
+            repo: request.repo,
+            branch: request.branch,
+            path: file.path,
+            message: request.message,
+            sha: existingSha
+          });
+          latestSha = response.data.commit.sha ?? latestSha;
+          changedFiles += 1;
+          continue;
+        }
+
+        const response = await this.octokit.repos.createOrUpdateFileContents({
+          owner: request.owner,
+          repo: request.repo,
+          branch: request.branch,
+          path: file.path,
+          message: request.message,
+          content:
+            file.encoding === "base64" ? file.content.replace(/\s+/g, "") : btoa(file.content),
+          sha: existingSha
+        });
+        latestSha = response.data.commit.sha ?? latestSha;
+        changedFiles += 1;
+      }
+
+      return {
+        sha: latestSha || createStableSha(request),
+        fileCount: changedFiles
+      };
+    } catch (error: unknown) {
+      if (isWorkflowPermissionError(error)) {
+        throw new Error(
+          "Repository needs GitHub App Workflows permission. Configure the GitHub App with Workflows: Read and write, approve the updated installation, then run Set Up Blog Site again.",
+          { cause: error }
+        );
+      }
+      if (isResourceNotAccessibleByIntegration(error) || isGitHubStatusError(error, 403)) {
+        throw new Error(
+          "Repository needs GitHub App write permissions. Configure the GitHub App with Contents: Read and write, Actions: Read, Workflows: Read and write, Pages: Read and write, and Administration: Read and write, then reconnect this repository.",
+          { cause: error }
+        );
+      }
+      throw new Error(
+        `GitHub Contents API fallback failed after Git Data API was blocked. ${describeGitHubApiError(error)}`,
+        { cause: error }
+      );
+    }
+  }
+
+  private async getRepositoryFileSha(request: GitHubCommitRequest, path: string): Promise<string | undefined> {
+    try {
+      const response = await this.octokit.repos.getContent({
+        owner: request.owner,
+        repo: request.repo,
+        path,
+        ref: request.branch
+      });
+      if (
+        typeof response.data === "object" &&
+        response.data !== null &&
+        !Array.isArray(response.data) &&
+        "sha" in response.data &&
+        typeof response.data.sha === "string"
+      ) {
+        return response.data.sha;
+      }
+      return undefined;
+    } catch (error: unknown) {
+      if (isGitHubStatusError(error, 404)) return undefined;
+      throw error;
+    }
   }
 
   async getWorkflowStatus(ref: GitHubRepositoryRef): Promise<GitHubWorkflowStatus> {
@@ -257,10 +367,11 @@ export class GitHubClient {
       owner: ref.owner,
       repo: ref.repo,
       branch: ref.branch,
+      head_sha: commitSha,
       per_page: 20
     });
     const run = response.data.workflow_runs.find((item) => item.head_sha === commitSha);
-    if (!run) return "queued";
+    if (!run) return "not_found";
 
     const current = await this.octokit.actions.getWorkflowRun({
       owner: ref.owner,
@@ -310,6 +421,21 @@ export class GitHubClient {
     const TEMPLATE_OWNER = "ij-roy";
     const TEMPLATE_REPO = "Ilm";
     const TEMPLATE_PREFIX = "templates/astro-blog/";
+    const standaloneTsConfig = `{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "jsx": "preserve",
+    "jsxImportSource": "astro",
+    "types": ["astro/client"],
+    "skipLibCheck": true,
+    "noEmit": true
+  },
+  "include": ["src", "astro.config.mjs"]
+}
+`;
 
     // 1. Fetch the recursive tree of the template repository
     const treeResponse = await this.octokit.git.getTree({
@@ -340,6 +466,15 @@ export class GitHubClient {
 
         // Strip the templates/astro-blog/ prefix
         const targetPath = file.path!.substring(TEMPLATE_PREFIX.length);
+
+        if (targetPath === "tsconfig.json") {
+          return {
+            operation: "upsert" as const,
+            path: targetPath,
+            content: standaloneTsConfig,
+            encoding: "utf-8" as const
+          };
+        }
 
         return {
           operation: "upsert" as const,
@@ -399,13 +534,14 @@ jobs:
 `;
 
     commitFiles.push(
+      ...getAstroBlogRouteOverrides(),
       {
         operation: "upsert",
         path: "content/posts/welcome.md",
         content: `---
 title: "Welcome to Ilm"
 slug: "welcome-to-ilm"
-description: "Your first live post managed by Ilm."
+description: "Your first live blog managed by Ilm."
 publishedAt: "${new Date().toISOString()}"
 updatedAt: "${new Date().toISOString()}"
 tags: ["ilm"]
@@ -415,7 +551,7 @@ author: "Ilm"
 
 # Welcome to Ilm
 
-This post lives in your repository at \`content/posts/welcome.md\` and is rendered by your static site.
+This blog lives in your repository and is rendered by your static site.
 `,
         encoding: "utf-8"
       },
@@ -499,6 +635,126 @@ This post lives in your repository at \`content/posts/welcome.md\` and is render
   }
 }
 
+function getAstroBlogRouteOverrides(): GitHubFileWrite[] {
+  return [
+    {
+      operation: "upsert",
+      path: "src/pages/blogs/[slug].astro",
+      content: `---
+import { getPublishedPosts, getSeoConfigPath } from "../../template/posts";
+import { marked } from "marked";
+import { readFile } from "node:fs/promises";
+
+export async function getStaticPaths() {
+  const posts = await getPublishedPosts();
+  return posts.map((post) => ({
+    params: { slug: post.slug },
+    props: { post }
+  }));
+}
+
+const { post } = Astro.props;
+
+let canonicalBaseUrl = "https://example.com";
+try {
+  const content = await readFile(getSeoConfigPath(), "utf-8");
+  const canonicalMatch = content.match(/canonicalBaseUrl:\\s*["']([^"']+)["']/);
+  if (canonicalMatch && canonicalMatch[1]) canonicalBaseUrl = canonicalMatch[1];
+} catch {
+  // fallback
+}
+
+const canonicalUrl = \`\${canonicalBaseUrl.replace(/\\/$/, "")}/blogs/\${post.slug}/\`;
+const htmlBody = marked.parse(post.body);
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width" />
+    <title>{post.title} | Ilm Blog</title>
+    <meta name="description" content={post.description} />
+    <link rel="canonical" href={canonicalUrl} />
+  </head>
+  <body>
+    <main>
+      <article>
+        <h1>{post.title}</h1>
+        <p>{post.description}</p>
+        <div set:html={htmlBody} />
+      </article>
+    </main>
+  </body>
+</html>
+`,
+      encoding: "utf-8"
+    },
+    {
+      operation: "upsert",
+      path: "src/pages/index.astro",
+      content: `---
+import { getPublishedPosts } from "../template/posts";
+
+const posts = await getPublishedPosts();
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width" />
+    <title>Ilm Blog</title>
+    <meta name="description" content="A user-owned Ilm blog." />
+  </head>
+  <body>
+    <main>
+      <h1>Ilm Blog</h1>
+      <p>Static output generated from your GitHub-backed blog content.</p>
+      <p><a href="/search/">Search Blog</a></p>
+      <ul>
+        {posts.map((post) => <li><a href={\`/blogs/\${post.slug}/\`}>{post.title}</a></li>)}
+      </ul>
+    </main>
+  </body>
+</html>
+`,
+      encoding: "utf-8"
+    },
+    {
+      operation: "upsert",
+      path: "src/pages/rss.xml.ts",
+      content: `import rss from "@astrojs/rss";
+import type { APIRoute } from "astro";
+import { getPublishedPosts } from "../template/posts";
+
+export const GET: APIRoute = async (context) => {
+  const posts = await getPublishedPosts();
+
+  return rss({
+    title: "Ilm Blog",
+    description: "A user-owned Ilm blog",
+    site: context.site || "https://example.com",
+    items: posts.map((post) => ({
+      title: post.title,
+      description: post.description,
+      pubDate: new Date(),
+      link: \`/blogs/\${post.slug}/\`
+    }))
+  });
+};
+`,
+      encoding: "utf-8"
+    },
+    {
+      operation: "delete",
+      path: "src/pages/posts/[slug].astro",
+      content: "",
+      encoding: "utf-8"
+    }
+  ];
+}
+
 type GitHubPaginatedResponse<T> = {
   readonly data: T;
   readonly headers?: {
@@ -531,6 +787,53 @@ function isGitHubStatusError(error: unknown, status: number): boolean {
     "status" in error &&
     (error as { readonly status?: unknown }).status === status
   );
+}
+
+function isResourceNotAccessibleByIntegration(error: unknown): boolean {
+  return (
+    isGitHubStatusError(error, 403) &&
+    "message" in (error as object) &&
+    String((error as { readonly message?: unknown }).message)
+      .toLowerCase()
+      .includes("resource not accessible by integration")
+  );
+}
+
+function isFastForwardUpdateError(error: unknown): boolean {
+  return (
+    (isGitHubStatusError(error, 409) || isGitHubStatusError(error, 422)) &&
+    "message" in (error as object) &&
+    String((error as { readonly message?: unknown }).message)
+      .toLowerCase()
+      .includes("not a fast forward")
+  );
+}
+
+function isWorkflowPermissionError(error: unknown): boolean {
+  if (!isGitHubStatusError(error, 403)) return false;
+  const text = describeGitHubApiError(error).toLowerCase();
+  return text.includes("workflow") || text.includes(".github/workflows");
+}
+
+function requestContainsWorkflowFile(request: GitHubCommitRequest): boolean {
+  return request.files.some((file) => file.path.startsWith(".github/workflows/"));
+}
+
+function describeGitHubApiError(error: unknown): string {
+  if (typeof error === "object" && error !== null) {
+    const payload = error as {
+      readonly status?: unknown;
+      readonly message?: unknown;
+      readonly documentation_url?: unknown;
+    };
+    const parts = [
+      typeof payload.status === "number" ? `Status ${payload.status}` : undefined,
+      typeof payload.message === "string" ? payload.message : undefined,
+      typeof payload.documentation_url === "string" ? payload.documentation_url : undefined
+    ].filter((part): part is string => Boolean(part));
+    if (parts.length > 0) return parts.join(" - ");
+  }
+  return error instanceof Error ? error.message : String(error);
 }
 
 function normalizeWorkflowRunStatus(
@@ -596,7 +899,7 @@ export class LocalGitHubClient {
       { path: "config/site.ts", type: "file" },
       { path: "config/seo.ts", type: "file" },
       { path: "config/navigation.ts", type: "file" },
-      { path: "site/astro", type: "directory" },
+      { path: "src/pages/blogs/[slug].astro", type: "file" },
       { path: ".github/workflows", type: "directory" }
     ];
   }
@@ -654,6 +957,7 @@ export class LocalGitHubClient {
       message: "Initialize Astro blog template (Mock)",
       files: [
         { operation: "upsert", path: "package.json", content: "{}", encoding: "utf-8" },
+        ...getAstroBlogRouteOverrides(),
         {
           operation: "upsert",
           path: ".github/workflows/deploy.yml",

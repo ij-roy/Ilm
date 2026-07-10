@@ -1,6 +1,6 @@
 ---
 title: Welcome to Ilm
-description: A starter post for the Ilm Astro template.
+description: A starter blog for the Ilm Astro template.
 slug: welcome-to-ilm
 publishedAt: 2026-07-03T00:00:00.000Z
 updatedAt: 2026-07-03T00:00:00.000Z
