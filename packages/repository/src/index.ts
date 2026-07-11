@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { AppError, Result, err, ok, validationError } from "@ilm/shared";
 
 export const RepositoryLayout = {
@@ -76,6 +77,48 @@ export type SiteConfig = z.infer<typeof SiteConfigSchema>;
 export type SeoConfig = z.infer<typeof SeoConfigSchema>;
 export type NavigationConfig = z.infer<typeof NavigationConfigSchema>;
 
+const HexColorSchema = z.string().regex(/^#[0-9a-f]{6}$/i, "Use a six-digit hex color");
+
+export const SiteSettingsSchema = z.object({
+  schemaVersion: z.literal(2),
+  title: z.string().trim().min(1),
+  description: z.string().trim().min(1),
+  canonicalUrl: z.string().url(),
+  blogPath: z
+    .string()
+    .transform((value) => value.trim().replace(/^\/+|\/+$/g, ""))
+    .pipe(z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/, "Blog path must be one safe segment")),
+  author: z.object({
+    name: z.string().trim().min(1),
+    url: z.string().url().optional()
+  }),
+  theme: z.object({
+    logo: z.string().optional(),
+    accent: HexColorSchema,
+    background: HexColorSchema,
+    text: HexColorSchema,
+    typography: z.enum(["editorial", "modern", "technical"])
+  }),
+  navigation: z
+    .array(z.object({ label: z.string().trim().min(1), href: z.string().trim().min(1) }))
+    .default([]),
+  googleAnalyticsId: z.string().trim().optional()
+});
+
+export type SiteSettings = z.infer<typeof SiteSettingsSchema>;
+
+export const ContentDocumentSchema = z.object({
+  kind: z.enum(["draft", "blog"]),
+  path: z.string().min(1),
+  blobSha: z.string().optional(),
+  lastCommitSha: z.string().optional(),
+  savedSlug: z.string().min(1),
+  frontmatter: z.union([PostFrontmatterSchema, DraftFrontmatterSchema]),
+  markdown: z.string()
+});
+
+export type ContentDocument = z.infer<typeof ContentDocumentSchema>;
+
 export type Post = {
   readonly path: string;
   readonly frontmatter: PostFrontmatter;
@@ -119,6 +162,47 @@ export function sanitizePathSegment(input: string): string {
     .replace(/^-+|-+$/g, "");
 }
 
+export function createRepositoryKey(ref: {
+  readonly owner: string;
+  readonly repo: string;
+  readonly branch: string;
+}): string {
+  return `${ref.owner}/${ref.repo}/${ref.branch}`.toLowerCase();
+}
+
+export function parseSiteSettings(content: string): SiteSettings {
+  return SiteSettingsSchema.parse(JSON.parse(content));
+}
+
+export function parseContentDocument(
+  kind: "draft" | "blog",
+  path: string,
+  content: string,
+  identity: { readonly blobSha?: string; readonly lastCommitSha?: string } = {}
+): ContentDocument {
+  const boundary = content.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/);
+  if (!boundary) throw new Error("Markdown document is missing valid frontmatter");
+  const data = parseYaml(boundary[1], { maxAliasCount: 0 }) as unknown;
+  const markdown = content.slice(boundary[0].length);
+  const fileSlug = path.split("/").at(-1)?.replace(/\.md$/i, "") ?? "";
+  const schema = kind === "blog" ? PostFrontmatterSchema : DraftFrontmatterSchema;
+  const frontmatter = schema.parse(data);
+  const declaredSlug = frontmatter.slug;
+
+  if (declaredSlug && declaredSlug !== fileSlug) {
+    throw new Error(`Frontmatter slug must match the file path slug (${fileSlug})`);
+  }
+
+  return ContentDocumentSchema.parse({
+    kind,
+    path,
+    ...identity,
+    savedSlug: fileSlug,
+    frontmatter: { ...frontmatter, slug: declaredSlug ?? fileSlug },
+    markdown: markdown.trimStart()
+  });
+}
+
 export function buildPostPath(slug: string): string {
   return `${RepositoryLayout.posts}/${sanitizePathSegment(slug)}.md`;
 }
@@ -151,32 +235,16 @@ export function buildMediaPath(kind: MediaKind, fileName: string): MediaLocation
 }
 
 export function serializeFrontmatter(frontmatter: Record<string, unknown>): string {
-  const lines = Object.entries(frontmatter)
-    .filter(([, value]) => value !== undefined && value !== "")
-    .map(([key, value]) => `${key}: ${formatYamlValue(value)}`);
-  return `---\n${lines.join("\n")}\n---`;
+  const value = Object.fromEntries(
+    Object.entries(frontmatter).filter(([, item]) => item !== undefined && item !== "")
+  );
+  return `---\n${stringifyYaml(value, { lineWidth: 0 }).trimEnd()}\n---`;
 }
 
 export function serializeMarkdownDocument<TFrontmatter extends Record<string, unknown>>(
   document: MarkdownDocument<TFrontmatter>
 ): string {
   return `${serializeFrontmatter(document.frontmatter)}\n\n${document.body.trim()}\n`;
-}
-
-function formatYamlValue(value: unknown): string {
-  if (Array.isArray(value)) {
-    return `[${value.map((item) => JSON.stringify(String(item))).join(", ")}]`;
-  }
-
-  if (typeof value === "string") {
-    return JSON.stringify(value);
-  }
-
-  if (typeof value === "boolean" || typeof value === "number") {
-    return String(value);
-  }
-
-  return JSON.stringify(value);
 }
 
 export function validateRepositoryStructure(

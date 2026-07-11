@@ -1,6 +1,5 @@
 import { useState, useEffect } from "react";
 import { Link } from "react-router-dom";
-import { LightRays } from "./components/LightRays";
 import { Button } from "@ilm/ui";
 import { BookOpen, Code2, Compass, ShieldAlert, Cpu } from "lucide-react";
 
@@ -42,21 +41,6 @@ export function DocsPage({ onConnectGitHub }: { readonly onConnectGitHub: () => 
 
   return (
     <div className="bg-black text-white min-h-screen font-sans selection:bg-cyan-500/30">
-      {/* Background LightRays */}
-      <div className="fixed inset-0 pointer-events-none opacity-40 z-0">
-        <LightRays
-          raysOrigin="top-left"
-          raysColor="#a855f7"
-          raysSpeed={1.0}
-          lightSpread={0.9}
-          rayLength={1.8}
-          followMouse={false}
-          mouseInfluence={0.1}
-          noiseAmount={0.08}
-          distortion={0.05}
-        />
-      </div>
-
       {/* Navbar */}
       <div className="fixed top-0 left-0 right-0 z-50 flex justify-center pt-6 px-4">
         <nav
@@ -288,10 +272,10 @@ config/
               utilizes a direct-to-provider integration.
             </p>
             <p className="text-zinc-400 leading-relaxed text-sm">
-              Supply your own Google Gemini, OpenAI, or Anthropic API key in Settings. The CMS sends
-              requests directly from your browser to the provider. We never touch, record, or track
-              your API usage. This guarantees privacy and saves you up to 90% compared to typical
-              platform pricing.
+              Supply your own Google Gemini API key in Settings. Requests go directly from your
+              browser to Google. A session key stays in memory; optional local storage contains only
+              passphrase-encrypted ciphertext. OpenAI and Anthropic integrations are not available
+              yet.
             </p>
           </section>
         </main>

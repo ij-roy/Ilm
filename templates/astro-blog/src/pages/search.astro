@@ -1,111 +1,65 @@
 ---
-import { readFile } from "node:fs/promises";
-import { getSeoConfigPath } from "../template/posts";
-
-let googleAnalyticsId: string | undefined = undefined;
-try {
-  const content = await readFile(getSeoConfigPath(), "utf-8");
-  const match = content.match(/googleAnalyticsId:\s*["']([^"']+)["']/);
-  if (match && match[1]) {
-    googleAnalyticsId = match[1];
-  }
-} catch {
-  googleAnalyticsId = undefined;
-}
+import SiteLayout from "../layouts/SiteLayout.astro";
+import { getSiteSettings } from "../template/posts";
+const settings = await getSiteSettings();
 ---
 
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width" />
-    <title>Search | Ilm Starter</title>
+<SiteLayout settings={settings} title="Search" description={`Search ${settings.title}`}>
+  <section class="search shell">
+    <p class="eyebrow">Archive</p>
+    <h1>Search</h1>
+    <label for="search-input">Search published blogs</label>
+    <input type="search" id="search-input" autocomplete="off" />
+    <p id="search-status" role="status">Loading search index…</p>
+    <ol id="search-results"></ol>
+  </section>
+  <script is:inline define:vars={{ base: import.meta.env.BASE_URL, blogPath: settings.blogPath }}>
+    const input = document.querySelector("#search-input");
+    const status = document.querySelector("#search-status");
+    const results = document.querySelector("#search-results");
+    let index = [];
 
-    {googleAnalyticsId && (
-      <>
-        <script type="text/javascript" is:inline async src={`https://www.googletagmanager.com/gtag/js?id=${googleAnalyticsId}`}></script>
-        <script type="text/javascript" is:inline define:vars={{ googleAnalyticsId }}>
-          window.dataLayer = window.dataLayer || [];
-          function gtag(){dataLayer.push(arguments);}
-          gtag('js', new Date());
-          gtag('config', googleAnalyticsId);
-        </script>
-      </>
-    )}
-    
-    <style>
-      body { font-family: sans-serif; line-height: 1.5; color: #0f172a; }
-      .search-container { max-width: 600px; margin: 2rem auto; }
-      input { width: 100%; padding: 0.75rem; font-size: 1rem; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
-      .results { margin-top: 1.5rem; list-style: none; padding: 0; }
-      .results li { margin-bottom: 1rem; border-bottom: 1px solid #eee; padding-bottom: 1rem; }
-      .results a { text-decoration: none; color: #0f172a; font-weight: 600; font-size: 1.2rem; }
-      .results a:hover { text-decoration: underline; }
-      .results p { margin-top: 0.25rem; color: #475569; font-size: 0.9rem; }
-      .draft-badge { font-size: 0.75rem; background: #fef08a; color: #854d0e; padding: 0.1rem 0.4rem; border-radius: 9999px; margin-left: 0.5rem; vertical-align: middle; }
-    </style>
-  </head>
-  <body>
-    <div class="search-container">
-      <h1>Search</h1>
-      <a href="/">← Back Home</a>
-      <br><br>
-      <input type="search" id="search-input" placeholder="Search blogs..." autofocus />
-      
-      <div id="loading" style="margin-top: 1rem; color: #666;">Loading index...</div>
-      <ul id="search-results" class="results"></ul>
-    </div>
-
-    <script>
-      let searchIndex: any[] = [];
-      const input = document.getElementById("search-input") as HTMLInputElement;
-      const resultsContainer = document.getElementById("search-results") as HTMLUListElement;
-      const loading = document.getElementById("loading") as HTMLDivElement;
-
-      async function initSearch() {
-        try {
-          const res = await fetch("/search.json");
-          searchIndex = await res.json();
-          loading.style.display = "none";
-          
-          input.addEventListener("input", (e) => {
-            const query = (e.target as HTMLInputElement).value.toLowerCase().trim();
-            if (!query) {
-              resultsContainer.innerHTML = "";
-              return;
-            }
-            
-            const matches = searchIndex.filter((post) => {
-              // Null safety just in case
-              const t = post.title || "";
-              const d = post.description || "";
-              const b = post.body || "";
-              return t.toLowerCase().includes(query) || 
-                     d.toLowerCase().includes(query) || 
-                     b.toLowerCase().includes(query);
-            });
-            
-            if (matches.length === 0) {
-              resultsContainer.innerHTML = "<li>No results found.</li>";
-              return;
-            }
-            
-            resultsContainer.innerHTML = matches.map(post => `
-              <li>
-                <a href="/blogs/${post.slug}/">
-                  ${post.title}
-                  ${post.isDraft ? '<span class="draft-badge">Draft</span>' : ''}
-                </a>
-                <p>${post.description}</p>
-              </li>
-            `).join("");
-          });
-        } catch (err) {
-          loading.textContent = "Failed to load search index.";
-        }
+    function render(matches) {
+      results.replaceChildren();
+      for (const post of matches) {
+        const item = document.createElement("li");
+        const link = document.createElement("a");
+        const description = document.createElement("p");
+        link.href = `${base}${blogPath}/${encodeURIComponent(post.slug)}/`;
+        link.textContent = post.title;
+        description.textContent = post.description;
+        item.append(link, description);
+        results.append(item);
       }
+      status.textContent = matches.length ? `${matches.length} result${matches.length === 1 ? "" : "s"}` : "No results found.";
+    }
 
-      initSearch();
-    </script>
-  </body>
-</html>
+    fetch(`${base}search.json`)
+      .then((response) => {
+        if (!response.ok) throw new Error("Search index failed");
+        return response.json();
+      })
+      .then((data) => {
+        index = Array.isArray(data) ? data : [];
+        status.textContent = "Type to search.";
+      })
+      .catch(() => { status.textContent = "Search is unavailable right now."; });
+
+    input.addEventListener("input", () => {
+      const query = input.value.trim().toLowerCase();
+      if (!query) { results.replaceChildren(); status.textContent = "Type to search."; return; }
+      render(index.filter((post) => `${post.title} ${post.description} ${post.body}`.toLowerCase().includes(query)));
+    });
+  </script>
+  <style>
+    .search { max-width: 48rem; padding-block: clamp(3rem, 8vw, 7rem); }
+    h1 { margin: .5rem 0 2rem; font-size: clamp(3rem, 8vw, 5rem); }
+    label { display: block; margin-bottom: .5rem; font: 600 .875rem/1.4 ui-sans-serif, system-ui, sans-serif; }
+    input { width: 100%; border: 1px solid color-mix(in srgb, var(--text) 25%, transparent); border-radius: .3rem; padding: .9rem 1rem; font: 1rem/1.4 ui-sans-serif, system-ui, sans-serif; }
+    input:focus { outline: 3px solid color-mix(in srgb, var(--accent) 30%, transparent); border-color: var(--accent); }
+    #search-status { color: color-mix(in srgb, var(--text) 60%, transparent); font: .875rem/1.5 ui-sans-serif, system-ui, sans-serif; }
+    ol { list-style: none; padding: 0; }
+    li { padding: 1.5rem 0; border-top: 1px solid color-mix(in srgb, var(--text) 15%, transparent); }
+    li a { font-size: 1.35rem; font-weight: 700; }
+  </style>
+</SiteLayout>

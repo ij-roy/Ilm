@@ -35,7 +35,12 @@ vi.mock("@octokit/rest", () => ({
   })
 }));
 
-import { GitHubClient, LocalGitHubClient, manifestToCommitRequest } from "../src/index";
+import {
+  GitHubClient,
+  GitHubConflictError,
+  LocalGitHubClient,
+  manifestToCommitRequest
+} from "../src/index";
 
 describe("@ilm/github", () => {
   beforeEach(() => {
@@ -224,7 +229,9 @@ describe("@ilm/github", () => {
   it("reports when no workflow run exists for the publish commit", async () => {
     octokitMock.actions.listWorkflowRunsForRepo.mockResolvedValueOnce({
       data: {
-        workflow_runs: [{ id: 1, head_sha: "other-sha", status: "completed", conclusion: "success" }]
+        workflow_runs: [
+          { id: 1, head_sha: "other-sha", status: "completed", conclusion: "success" }
+        ]
       }
     });
 
@@ -279,7 +286,7 @@ describe("@ilm/github", () => {
     );
   });
 
-  it("reports missing Workflows permission when template setup cannot create the deploy workflow", async () => {
+  it("never writes deployment workflows with the browser installation token", async () => {
     octokitMock.git.getTree.mockResolvedValueOnce({
       data: {
         tree: [{ path: "templates/astro-blog/package.json", type: "blob", sha: "blob-sha" }]
@@ -296,24 +303,16 @@ describe("@ilm/github", () => {
       status: 403,
       message: "Resource not accessible by integration"
     });
-    octokitMock.repos.createOrUpdateFileContents.mockImplementation(({ path }) => {
-      if (path === ".github/workflows/deploy.yml") {
-        return Promise.reject({
-          status: 403,
-          message: "Workflow does not have write permission"
-        });
-      }
-      return Promise.resolve({ data: { commit: { sha: "contents-sha" } } });
+    octokitMock.repos.createOrUpdateFileContents.mockResolvedValue({
+      data: { commit: { sha: "contents-sha" } }
     });
 
     const client = new GitHubClient("installation-token");
-    await expect(
-      client.initializeAstroTemplate({
-        owner: "owner",
-        repo: "repo",
-        branch: "main"
-      })
-    ).rejects.toThrow("Repository needs GitHub App Workflows permission");
+    await client.initializeAstroTemplate({ owner: "owner", repo: "repo", branch: "main" });
+
+    expect(octokitMock.repos.createOrUpdateFileContents).not.toHaveBeenCalledWith(
+      expect.objectContaining({ path: expect.stringContaining(".github/workflows/") })
+    );
   });
 
   it("commits a standalone tsconfig when initializing a user blog repo", async () => {
@@ -350,7 +349,7 @@ describe("@ilm/github", () => {
     expect(tsconfigEntry.content).not.toContain("../../tsconfig.base.json");
   });
 
-  it("does not try browser Contents fallback when Git Data cannot write a workflow file", async () => {
+  it("uses the Contents fallback only for ordinary template files", async () => {
     octokitMock.git.getTree.mockResolvedValueOnce({
       data: {
         tree: [{ path: "templates/astro-blog/package.json", type: "blob", sha: "blob-sha" }]
@@ -368,14 +367,14 @@ describe("@ilm/github", () => {
     });
 
     const client = new GitHubClient("installation-token");
-    await expect(
-      client.initializeAstroTemplate({
-        owner: "owner",
-        repo: "repo",
-        branch: "main"
-      })
-    ).rejects.toThrow("Repository needs GitHub App Workflows permission");
-    expect(octokitMock.repos.createOrUpdateFileContents).not.toHaveBeenCalled();
+    await client.initializeAstroTemplate({ owner: "owner", repo: "repo", branch: "main" });
+
+    expect(octokitMock.repos.createOrUpdateFileContents).toHaveBeenCalledWith(
+      expect.objectContaining({ path: "package.json" })
+    );
+    expect(octokitMock.repos.createOrUpdateFileContents).not.toHaveBeenCalledWith(
+      expect.objectContaining({ path: expect.stringContaining(".github/workflows/") })
+    );
   });
 
   it("retries Git Data commits when the branch moves before ref update", async () => {
@@ -407,5 +406,73 @@ describe("@ilm/github", () => {
     expect(result.sha).toBe("second-commit-sha");
     expect(octokitMock.git.updateRef).toHaveBeenCalledTimes(2);
     expect(octokitMock.git.getRef).toHaveBeenCalledTimes(2);
+  });
+
+  it("loads UTF-8 markdown files with their blob identity", async () => {
+    octokitMock.git.getTree.mockResolvedValueOnce({
+      data: {
+        tree: [
+          { path: "content/posts/hello.md", type: "blob", sha: "blob-hello" },
+          { path: "content/posts/readme.txt", type: "blob", sha: "blob-text" },
+          { path: "content/drafts/draft.md", type: "blob", sha: "blob-draft" }
+        ]
+      }
+    });
+    octokitMock.repos.getContent.mockResolvedValueOnce({
+      data: {
+        type: "file",
+        sha: "blob-hello",
+        content: btoa(
+          Array.from(new TextEncoder().encode("# नमस्ते"), (byte) =>
+            String.fromCharCode(byte)
+          ).join("")
+        ),
+        encoding: "base64"
+      }
+    });
+
+    const client = new GitHubClient("installation-token");
+    const files = await client.listMarkdownDocuments(
+      { owner: "owner", repo: "repo", branch: "main" },
+      "content/posts"
+    );
+
+    expect(files).toEqual([
+      { path: "content/posts/hello.md", blobSha: "blob-hello", content: "# नमस्ते" }
+    ]);
+  });
+
+  it("rejects a commit when an expected remote blob changed", async () => {
+    octokitMock.git.getRef.mockResolvedValueOnce({ data: { object: { sha: "head-1" } } });
+    octokitMock.git.getCommit.mockResolvedValueOnce({ data: { tree: { sha: "tree-1" } } });
+    octokitMock.repos.getContent.mockResolvedValueOnce({
+      data: { type: "file", sha: "remote-new" }
+    });
+
+    const client = new GitHubClient("installation-token");
+    await expect(
+      client.executeCommit({
+        owner: "owner",
+        repo: "repo",
+        branch: "main",
+        message: "save draft",
+        files: [
+          {
+            path: "content/drafts/hello.md",
+            content: "# local",
+            encoding: "utf-8",
+            expectedSha: "remote-old"
+          }
+        ]
+      })
+    ).rejects.toEqual(
+      expect.objectContaining<Partial<GitHubConflictError>>({
+        name: "GitHubConflictError",
+        path: "content/drafts/hello.md",
+        expectedSha: "remote-old",
+        actualSha: "remote-new"
+      })
+    );
+    expect(octokitMock.git.createTree).not.toHaveBeenCalled();
   });
 });

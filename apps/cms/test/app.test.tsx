@@ -1,6 +1,7 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../src/app";
+import { createOAuthState } from "../src/lib/persistence";
 
 describe("@ilm/cms", () => {
   beforeEach(() => {
@@ -45,25 +46,36 @@ describe("@ilm/cms", () => {
 
   it("accepts callback tokens only when the OAuth nonce matches", async () => {
     window.sessionStorage.setItem("ilm.auth.pendingState", "nonce-123");
+    const oauthState = createOAuthState("nonce-123", window.location.origin);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        if (String(input).includes("/user/installations")) {
+          return new Response(JSON.stringify({ installations: [] }), { status: 200 });
+        }
+        return new Response(JSON.stringify({}), { status: 200 });
+      })
+    );
     window.history.pushState(
       {},
       "Test",
-      "/dashboard#user_token=user-token&installation_id=77&state=nonce-123"
+      `/dashboard#user_token=user-token&installation_id=77&state=${encodeURIComponent(oauthState)}`
     );
 
     render(<App />);
 
     expect(await screen.findByText("Choose a repository...")).toBeInTheDocument();
     expect(window.sessionStorage.getItem("ilm.auth.session")).toContain("user-token");
-    expect(window.localStorage.getItem("ilm.cms.state.v1")).not.toContain("user-token");
+    expect(window.localStorage.getItem("ilm.cms.state.v2")).not.toContain("user-token");
   });
 
   it("rejects callback tokens when the OAuth nonce does not match", () => {
     window.sessionStorage.setItem("ilm.auth.pendingState", "nonce-expected");
+    const oauthState = createOAuthState("nonce-wrong", window.location.origin);
     window.history.pushState(
       {},
       "Test",
-      "/dashboard#user_token=user-token&installation_id=77&state=nonce-wrong"
+      `/dashboard#user_token=user-token&installation_id=77&state=${encodeURIComponent(oauthState)}`
     );
 
     render(<App />);
@@ -118,7 +130,11 @@ describe("@ilm/cms", () => {
 
     expect(await screen.findByRole("heading", { name: "Editor" })).toBeInTheDocument();
     expect(await screen.findByText("Live blog URL")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "https://owner.github.io/repo/blogs/own-your-publishing-workflow/" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", {
+        name: "https://owner.github.io/repo/blog/own-your-publishing-workflow/"
+      })
+    ).toBeInTheDocument();
   });
 });
 

@@ -1,0 +1,52 @@
+---
+import SiteLayout from "../layouts/SiteLayout.astro";
+import { getBlogUrl, getPublishedPosts, getSiteSettings, renderSafeMarkdown } from "../template/posts";
+
+export async function getStaticPaths() {
+  const settings = await getSiteSettings();
+  const posts = await getPublishedPosts();
+  return posts.map((post) => ({ params: { path: `${settings.blogPath}/${post.slug}` }, props: { post, settings } }));
+}
+
+const { post, settings } = Astro.props;
+const base = import.meta.env.BASE_URL;
+const canonical = new URL(getBlogUrl(settings, post.slug, new URL(settings.canonicalUrl).pathname), settings.canonicalUrl).toString();
+const htmlBody = renderSafeMarkdown(post.body).replaceAll('src="/media/', `src="${base}media/`);
+const jsonLd = {
+  "@context": "https://schema.org",
+  "@type": "BlogPosting",
+  headline: post.title,
+  description: post.description,
+  author: { "@type": "Person", name: post.author || settings.author.name },
+  datePublished: post.publishedAt.toISOString(),
+  dateModified: post.updatedAt.toISOString(),
+  url: canonical,
+  ...(post.coverImage ? { image: [new URL(post.coverImage, settings.canonicalUrl).toString()] } : {})
+};
+---
+
+<SiteLayout settings={settings} title={post.title} description={post.description} canonical={canonical} image={post.coverImage} type="article">
+  <article class="article shell">
+    <p class="eyebrow">{post.categories.join(" · ") || "Blog"}</p>
+    <h1>{post.title}</h1>
+    <p class="dek">{post.description}</p>
+    <div class="meta">
+      <span>{post.author || settings.author.name}</span>
+      <time datetime={post.publishedAt.toISOString()}>{post.publishedAt.toLocaleDateString("en", { dateStyle: "long" })}</time>
+      <span>{Math.max(1, Math.ceil(post.body.trim().split(/\s+/).length / 225))} min read</span>
+    </div>
+    {post.coverImage && <img class="cover" src={`${base}${post.coverImage.replace(/^\//, "")}`} alt="" />}
+    <div class="prose" set:html={htmlBody} />
+    {post.tags.length > 0 && <ul class="tags">{post.tags.map((tag) => <li>{tag}</li>)}</ul>}
+    <script type="application/ld+json" is:inline set:html={JSON.stringify(jsonLd)} />
+  </article>
+  <style>
+    .article { max-width: 48rem; padding-block: clamp(3rem, 8vw, 7rem); }
+    h1 { max-width: 18ch; margin: .65rem 0 1rem; font-size: clamp(2.6rem, 8vw, 5.5rem); line-height: .98; letter-spacing: 0; }
+    .dek { max-width: 42rem; color: color-mix(in srgb, var(--text) 70%, transparent); font-size: 1.3rem; line-height: 1.55; }
+    .meta { display: flex; flex-wrap: wrap; gap: .5rem 1.25rem; margin: 2rem 0 3rem; font: .875rem/1.5 ui-sans-serif, system-ui, sans-serif; color: color-mix(in srgb, var(--text) 65%, transparent); }
+    .cover { width: 100%; max-height: 34rem; object-fit: cover; margin-bottom: 3rem; border-radius: .4rem; }
+    .tags { display: flex; flex-wrap: wrap; gap: .5rem; padding: 2rem 0 0; list-style: none; font: .8rem/1 ui-sans-serif, system-ui, sans-serif; }
+    .tags li { border: 1px solid color-mix(in srgb, var(--text) 18%, transparent); padding: .45rem .65rem; border-radius: .25rem; }
+  </style>
+</SiteLayout>

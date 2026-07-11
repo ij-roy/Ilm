@@ -13,7 +13,28 @@ export type GitHubFileWrite = {
   readonly content: string;
   readonly encoding: "utf-8" | "base64";
   readonly operation?: "upsert" | "delete";
+  readonly expectedSha?: string | null;
 };
+
+export type GitHubTextFile = {
+  readonly path: string;
+  readonly blobSha: string;
+  readonly content: string;
+};
+
+export class GitHubConflictError extends Error {
+  readonly path: string;
+  readonly expectedSha?: string | null;
+  readonly actualSha?: string;
+
+  constructor(path: string, expectedSha?: string | null, actualSha?: string) {
+    super(`Remote file changed: ${path}`);
+    this.name = "GitHubConflictError";
+    this.path = path;
+    this.expectedSha = expectedSha;
+    this.actualSha = actualSha;
+  }
+}
 
 export type GitHubCommitRequest = GitHubRepositoryRef & {
   readonly message: string;
@@ -116,6 +137,46 @@ export class GitHubClient {
     }));
   }
 
+  async listMarkdownDocuments(
+    ref: GitHubRepositoryRef,
+    directory: string
+  ): Promise<GitHubTextFile[]> {
+    const response = await this.octokit.git.getTree({
+      owner: ref.owner,
+      repo: ref.repo,
+      tree_sha: ref.branch,
+      recursive: "true"
+    });
+    const prefix = `${directory.replace(/\/$/, "")}/`;
+    const files = response.data.tree.filter(
+      (item) =>
+        item.type === "blob" &&
+        typeof item.path === "string" &&
+        item.path.startsWith(prefix) &&
+        item.path.endsWith(".md") &&
+        typeof item.sha === "string"
+    );
+
+    return Promise.all(
+      files.map(async (file) => {
+        const current = await this.octokit.repos.getContent({
+          owner: ref.owner,
+          repo: ref.repo,
+          path: file.path!,
+          ref: ref.branch
+        });
+        if (Array.isArray(current.data) || !("content" in current.data)) {
+          throw new Error(`Target path is not a file: ${file.path}`);
+        }
+        return {
+          path: file.path!,
+          blobSha: current.data.sha,
+          content: decodeUtf8Base64(current.data.content)
+        };
+      })
+    );
+  }
+
   async getFileContent(
     ref: { owner: string; repo: string; branch: string },
     path: string
@@ -141,6 +202,22 @@ export class GitHubClient {
     }
   }
 
+  async getTextFile(ref: GitHubRepositoryRef, path: string): Promise<GitHubTextFile | undefined> {
+    try {
+      const response = await this.octokit.repos.getContent({
+        owner: ref.owner,
+        repo: ref.repo,
+        path,
+        ref: ref.branch
+      });
+      if (Array.isArray(response.data) || !("content" in response.data)) return undefined;
+      return { path, blobSha: response.data.sha, content: decodeUtf8Base64(response.data.content) };
+    } catch (error: unknown) {
+      if (isGitHubStatusError(error, 404)) return undefined;
+      throw error;
+    }
+  }
+
   async executeCommit(request: GitHubCommitRequest): Promise<GitHubCommitResult> {
     return this.executeGitDataCommit(request, 2);
   }
@@ -161,6 +238,14 @@ export class GitHubClient {
         repo: request.repo,
         commit_sha: baseCommitSha
       });
+
+      for (const file of request.files) {
+        if (file.expectedSha === undefined) continue;
+        const actualSha = await this.getRepositoryFileSha(request, file.path);
+        if ((actualSha ?? null) !== file.expectedSha) {
+          throw new GitHubConflictError(file.path, file.expectedSha, actualSha);
+        }
+      }
 
       const tree = await this.octokit.git.createTree({
         owner: request.owner,
@@ -265,6 +350,9 @@ export class GitHubClient {
     try {
       for (const file of request.files) {
         const existingSha = await this.getRepositoryFileSha(request, file.path);
+        if (file.expectedSha !== undefined && (existingSha ?? null) !== file.expectedSha) {
+          throw new GitHubConflictError(file.path, file.expectedSha, existingSha);
+        }
 
         if (file.operation === "delete") {
           if (!existingSha) continue;
@@ -319,7 +407,10 @@ export class GitHubClient {
     }
   }
 
-  private async getRepositoryFileSha(request: GitHubCommitRequest, path: string): Promise<string | undefined> {
+  private async getRepositoryFileSha(
+    request: GitHubCommitRequest,
+    path: string
+  ): Promise<string | undefined> {
     try {
       const response = await this.octokit.repos.getContent({
         owner: request.owner,
@@ -624,13 +715,37 @@ This blog lives in your repository and is rendered by your static site.
       }
     );
 
-    // 5. Commit everything to the user's repository
+    // Only add canonical template files that are not already present. Workflow and Pages
+    // configuration are applied by the auth worker so elevated tokens never reach the browser.
+    const excludedTemplatePath =
+      /^(?:\.astro\/|\.github\/|test\/|src\/content\/)|^vitest\.config\./;
+    const canonicalCandidates = commitFiles
+      .slice(0, templateFiles.length)
+      .filter((file) => !excludedTemplatePath.test(file.path));
+    const missingFiles: GitHubFileWrite[] = [];
+    for (const file of canonicalCandidates) {
+      const existingSha = await this.getRepositoryFileSha(
+        { ...ref, message: "Inspect Ilm template", files: [] },
+        file.path
+      );
+      if (!existingSha) missingFiles.push({ ...file, expectedSha: null });
+    }
+
+    if (missingFiles.length === 0) {
+      const branch = await this.octokit.git.getRef({
+        owner: ref.owner,
+        repo: ref.repo,
+        ref: `heads/${ref.branch}`
+      });
+      return { sha: branch.data.object.sha, fileCount: 0 };
+    }
+
     return this.executeCommit({
       owner: ref.owner,
       repo: ref.repo,
       branch: ref.branch,
-      message: "Initialize Astro blog template and GitHub Actions deploy workflow",
-      files: commitFiles
+      message: "Initialize Ilm Astro site files",
+      files: missingFiles
     });
   }
 }
@@ -904,12 +1019,32 @@ export class LocalGitHubClient {
     ];
   }
 
+  async listMarkdownDocuments(
+    ref: GitHubRepositoryRef,
+    directory: string
+  ): Promise<GitHubTextFile[]> {
+    const prefix = `${ref.owner}/${ref.repo}/${ref.branch}/${directory.replace(/\/$/, "")}/`;
+    return [...this.files.entries()]
+      .filter(([key]) => key.startsWith(prefix) && key.endsWith(".md"))
+      .map(([key, content]) => ({
+        path: key.slice(`${ref.owner}/${ref.repo}/${ref.branch}/`.length),
+        blobSha: createStableSha({ ...ref, message: key, files: [] }),
+        content
+      }));
+  }
+
   async getFileContent(
     ref: { owner: string; repo: string; branch: string },
     path: string
   ): Promise<string> {
     const key = `${ref.owner}/${ref.repo}/${ref.branch}/${path}`;
     return this.files.get(key) || "";
+  }
+
+  async getTextFile(ref: GitHubRepositoryRef, path: string): Promise<GitHubTextFile | undefined> {
+    const content = await this.getFileContent(ref, path);
+    if (!content) return undefined;
+    return { path, blobSha: createStableSha({ ...ref, message: path, files: [] }), content };
   }
 
   async executeCommit(request: GitHubCommitRequest): Promise<GitHubCommitResult> {
@@ -990,4 +1125,9 @@ function createStableSha(request: GitHubCommitRequest): string {
     hash |= 0;
   }
   return Math.abs(hash).toString(16).padStart(8, "0");
+}
+
+function decodeUtf8Base64(content: string): string {
+  const binary = atob(content.replace(/\s+/g, ""));
+  return new TextDecoder().decode(Uint8Array.from(binary, (character) => character.charCodeAt(0)));
 }

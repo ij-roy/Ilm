@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 2,
+  "title": "Ilm Journal",
+  "description": "Independent writing, published from your own repository.",
+  "canonicalUrl": "https://example.com/",
+  "blogPath": "blog",
+  "author": { "name": "Ilm Author" },
+  "theme": {
+    "accent": "#0f766e",
+    "background": "#ffffff",
+    "text": "#18181b",
+    "typography": "editorial"
+  },
+  "navigation": [{ "label": "Home", "href": "/" }]
+}

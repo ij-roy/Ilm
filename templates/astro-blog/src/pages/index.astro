@@ -1,58 +1,42 @@
 ---
-import { getPublishedPosts } from "../template/posts";
-import { getSeoConfigPath } from "../template/posts";
+import SiteLayout from "../layouts/SiteLayout.astro";
+import { getBlogUrl, getPublishedPosts, getSiteSettings } from "../template/posts";
 
-import { readFile } from "node:fs/promises";
-
-const posts = await getPublishedPosts();
-
-// Dynamically check and read the user's repo config/seo.ts at build time
-let googleAnalyticsId: string | undefined = undefined;
-try {
-  const content = await readFile(getSeoConfigPath(), "utf-8");
-  const match = content.match(/googleAnalyticsId:\s*["']([^"']+)["']/);
-  if (match && match[1]) {
-    googleAnalyticsId = match[1];
-  }
-} catch {
-  // Graceful fallback if config file is not found (e.g. template build inside Ilm monorepo)
-  googleAnalyticsId = undefined;
-}
+const settings = await getSiteSettings();
+const posts = (await getPublishedPosts()).sort((a, b) => b.publishedAt.getTime() - a.publishedAt.getTime());
+const base = import.meta.env.BASE_URL;
 ---
 
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width" />
-    <title>Ilm Starter</title>
-    <meta name="description" content="A user-owned Ilm blog starter." />
-
-    {googleAnalyticsId && (
-      <>
-        <script type="text/javascript" is:inline async src={`https://www.googletagmanager.com/gtag/js?id=${googleAnalyticsId}`}></script>
-        <script type="text/javascript" is:inline define:vars={{ googleAnalyticsId }}>
-          window.dataLayer = window.dataLayer || [];
-          function gtag(){dataLayer.push(arguments);}
-          gtag('js', new Date());
-          gtag('config', googleAnalyticsId);
-        </script>
-      </>
+<SiteLayout settings={settings}>
+  <section class="hero shell">
+    <p class="eyebrow">Independent publishing</p>
+    <h1>{settings.title}</h1>
+    <p>{settings.description}</p>
+  </section>
+  <section class="archive shell" aria-labelledby="latest-heading">
+    <h2 id="latest-heading">Latest writing</h2>
+    {posts.length === 0 ? <p>No blogs have been published yet.</p> : (
+      <ol>
+        {posts.map((post) => (
+          <li>
+            <time datetime={post.publishedAt.toISOString()}>{post.publishedAt.toLocaleDateString("en", { month: "short", day: "numeric", year: "numeric" })}</time>
+            <div><a href={getBlogUrl(settings, post.slug, base)}>{post.title}</a><p>{post.description}</p></div>
+          </li>
+        ))}
+      </ol>
     )}
-  </head>
-  <body>
-    <main>
-      <h1>Ilm Starter</h1>
-      <p>Static output generated from the user-owned repository structure.</p>
-      <p><a href="/search/">🔍 Search Blog</a></p>
-      {googleAnalyticsId && (
-        <p style="color: #666; font-size: 0.85rem;">
-          Google Analytics: Active (<code>{googleAnalyticsId}</code>)
-        </p>
-      )}
-      <ul>
-        {posts.map((post) => <li><a href={`/blogs/${post.slug}/`}>{post.title}</a></li>)}
-      </ul>
-    </main>
-  </body>
-</html>
+  </section>
+  <style>
+    .hero { padding-block: clamp(4rem, 12vw, 10rem); }
+    .hero h1 { max-width: 14ch; margin: .75rem 0 1.25rem; font-size: clamp(3.5rem, 10vw, 7.5rem); line-height: .9; letter-spacing: 0; }
+    .hero > p:last-child { max-width: 38rem; color: color-mix(in srgb, var(--text) 68%, transparent); font-size: 1.35rem; line-height: 1.55; }
+    .archive { padding-bottom: 8rem; }
+    .archive h2 { font: 700 .8rem/1 ui-sans-serif, system-ui, sans-serif; text-transform: uppercase; letter-spacing: .08em; }
+    ol { list-style: none; padding: 0; margin: 2rem 0 0; border-top: 1px solid color-mix(in srgb, var(--text) 15%, transparent); }
+    li { display: grid; grid-template-columns: 10rem 1fr; gap: 2rem; padding: 2rem 0; border-bottom: 1px solid color-mix(in srgb, var(--text) 15%, transparent); }
+    time { color: color-mix(in srgb, var(--text) 60%, transparent); font: .85rem/1.5 ui-sans-serif, system-ui, sans-serif; }
+    li a { font-size: clamp(1.5rem, 3vw, 2.4rem); font-weight: 700; text-decoration-thickness: .08em; text-underline-offset: .15em; }
+    li p { color: color-mix(in srgb, var(--text) 68%, transparent); line-height: 1.6; }
+    @media (max-width: 40rem) { li { grid-template-columns: 1fr; gap: .5rem; } }
+  </style>
+</SiteLayout>

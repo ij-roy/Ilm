@@ -1,6 +1,5 @@
 import { useState, useEffect, type ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { LightRays } from "./components/LightRays";
 import { PenTool, Rocket, Search, BarChart2, Database, ArrowRight, Code2 } from "lucide-react";
 import { Button } from "@ilm/ui";
 
@@ -26,7 +25,11 @@ export function LandingPage({ onConnectGitHub }: { readonly onConnectGitHub: () 
           className={`transition-all duration-300 rounded-full px-4 md:px-6 py-3 flex items-center justify-between w-full max-w-5xl ${isScrolled ? "bg-black/40 backdrop-blur-xl shadow-[0_8px_32px_rgba(0,0,0,0.5)] border border-white/10" : "bg-transparent border border-transparent"}`}
         >
           <div className="flex items-center gap-3">
-            <img src="/icon-192.png" alt="Ilm" className="h-8 w-8 rounded-lg shadow-lg object-cover" />
+            <img
+              src="/icon-192.png"
+              alt="Ilm"
+              className="h-8 w-8 rounded-lg shadow-lg object-cover"
+            />
             <span className="font-semibold tracking-tight text-white hidden sm:block">Ilm</span>
           </div>
           <div className="hidden md:flex items-center gap-8 text-xs font-semibold tracking-wide uppercase text-zinc-400">
@@ -58,21 +61,6 @@ export function LandingPage({ onConnectGitHub }: { readonly onConnectGitHub: () 
 
       {/* Hero Section */}
       <section className="relative min-h-screen flex items-center justify-center pt-20 overflow-hidden">
-        {/* LightRays WebGL Background */}
-        <div className="absolute inset-0 pointer-events-none opacity-60">
-          <LightRays
-            raysOrigin="top-center"
-            raysColor="#06b6d4"
-            raysSpeed={1.5}
-            lightSpread={0.8}
-            rayLength={1.5}
-            followMouse={true}
-            mouseInfluence={0.2}
-            noiseAmount={0.1}
-            distortion={0.05}
-          />
-        </div>
-
         <div className="relative z-10 max-w-4xl mx-auto px-6 text-center">
           <h1
             className="text-5xl md:text-7xl font-bold tracking-tight mb-8 leading-tight animate-fade-in-up"
@@ -133,27 +121,27 @@ export function LandingPage({ onConnectGitHub }: { readonly onConnectGitHub: () 
             <FeatureCard
               icon={<PenTool className="w-6 h-6 text-purple-400" />}
               title="Rich Editor"
-              description="Notion-style block editor powered by TipTap, with intelligent AI suggestions."
+              description="A focused rich-text editor that stores clean, portable Markdown in your repository."
             />
             <FeatureCard
               icon={<Rocket className="w-6 h-6 text-pink-400" />}
               title="One-Click Publish"
-              description="Saves become commits. Publishing moves files from drafts to blogs automatically."
+              description="A blog is marked live only after GitHub Actions deploys it and the public URL responds."
             />
             <FeatureCard
               icon={<Search className="w-6 h-6 text-green-400" />}
               title="SEO Built-In"
-              description="Automatic validation for OpenGraph, Twitter Cards, and Schema.org metadata."
+              description="Validated metadata, canonical URLs, social cards, RSS, and structured article data."
             />
             <FeatureCard
               icon={<BarChart2 className="w-6 h-6 text-blue-400" />}
-              title="Integrated Analytics"
-              description="Connect Google Analytics and Search Console to view stats where you write."
+              title="Repository Backed"
+              description="Open existing drafts and blogs from any browser without moving content into our database."
             />
             <FeatureCard
               icon={<Code2 className="w-6 h-6 text-orange-400" />}
-              title="Framework Agnostic"
-              description="Works with Astro, Next.js, or any static site generator that builds from markdown."
+              title="Live Static Site"
+              description="A configurable Astro publication deploys to GitHub Pages under your own account."
             />
           </div>
         </div>
@@ -194,12 +182,6 @@ export function LandingPage({ onConnectGitHub }: { readonly onConnectGitHub: () 
 
       {/* CTA Section */}
       <section className="py-32 px-6 relative z-10 overflow-hidden">
-        {/* Subtle background glow */}
-        <div className="absolute inset-0 flex items-center justify-center opacity-30 pointer-events-none">
-          <div className="w-[600px] h-[600px] bg-cyan-500 rounded-full blur-[120px] mix-blend-screen opacity-20"></div>
-          <div className="w-[600px] h-[600px] bg-purple-500 rounded-full blur-[120px] mix-blend-screen opacity-20 -ml-32"></div>
-        </div>
-
         <div className="max-w-3xl mx-auto text-center relative z-10 glass-card p-12 md:p-16 rounded-3xl border border-white/10">
           <h2 className="text-4xl font-bold mb-6">Ready to take control?</h2>
           <p className="text-xl text-zinc-400 mb-10">

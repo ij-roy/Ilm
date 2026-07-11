@@ -1,6 +1,5 @@
 import { useState, useEffect } from "react";
 import { Link } from "react-router-dom";
-import { LightRays } from "./components/LightRays";
 import { Button } from "@ilm/ui";
 import { Shield, Lock, Eye, Database } from "lucide-react";
 
@@ -42,21 +41,6 @@ export function PrivacyPage({ onConnectGitHub }: { readonly onConnectGitHub: () 
 
   return (
     <div className="bg-black text-white min-h-screen font-sans selection:bg-cyan-500/30">
-      {/* Background LightRays */}
-      <div className="fixed inset-0 pointer-events-none opacity-40 z-0">
-        <LightRays
-          raysOrigin="bottom-right"
-          raysColor="#0ea5e9"
-          raysSpeed={1.0}
-          lightSpread={0.9}
-          rayLength={1.8}
-          followMouse={false}
-          mouseInfluence={0.1}
-          noiseAmount={0.08}
-          distortion={0.05}
-        />
-      </div>
-
       {/* Navbar */}
       <div className="fixed top-0 left-0 right-0 z-50 flex justify-center pt-6 px-4">
         <nav
@@ -156,9 +140,10 @@ export function PrivacyPage({ onConnectGitHub }: { readonly onConnectGitHub: () 
               At Ilm, privacy is not a feature—it is our core architectural philosophy.
             </p>
             <p className="text-zinc-400 leading-relaxed text-sm">
-              Because Ilm is an entirely client-side application (running locally in your browser)
-              without a central database, we physically cannot collect, sell, or analyze your
-              content. Your words, your drafts, and your images belong exclusively to you.
+              Ilm stores publication content in the GitHub repository you choose. The CMS uses a
+              Cloudflare Worker to complete GitHub OAuth, mint short-lived installation tokens, and
+              perform privileged GitHub Pages setup without exposing administrative tokens to the
+              browser.
             </p>
             <div className="border-l-2 border-cyan-500 pl-4 py-1 bg-cyan-950/20 rounded-r-md">
               <p className="text-sm font-medium text-cyan-300">
@@ -190,8 +175,9 @@ export function PrivacyPage({ onConnectGitHub }: { readonly onConnectGitHub: () 
               </li>
               <li>
                 <strong className="text-white">Token Storage:</strong> Authentication tokens are
-                stored securely in your browser's local storage. They are never sent to a backend
-                server.
+                stored in session storage and sent to the Ilm authentication worker when a
+                short-lived repository token is needed. They are removed when the session ends or
+                you disconnect.
               </li>
             </ul>
           </section>
@@ -208,10 +194,9 @@ export function PrivacyPage({ onConnectGitHub }: { readonly onConnectGitHub: () 
               Ilm supports "Bring Your Own Key" (BYOK) for AI generation features.
             </p>
             <p className="text-zinc-400 leading-relaxed text-sm">
-              If you provide an API key (e.g. OpenAI, Google Gemini, or Anthropic), it is encrypted
-              and stored locally in your browser. All AI requests are made directly from your
-              browser to the AI provider. Ilm has no middleware, meaning we never intercept your
-              prompts, your API keys, or your responses.
+              Gemini is the only available AI provider. Session keys remain in memory. If you opt
+              into encrypted local storage, Ilm stores AES-GCM ciphertext and requires your
+              passphrase to decrypt it. AI requests are sent directly from your browser to Google.
             </p>
           </section>
 
@@ -228,10 +213,9 @@ export function PrivacyPage({ onConnectGitHub }: { readonly onConnectGitHub: () 
               on our CMS platform.
             </p>
             <p className="text-zinc-400 leading-relaxed text-sm">
-              If you configure your blog to use Google Analytics or Search Console, you retain full
-              ownership of those accounts and the data they collect from your readers. Ilm simply
-              reads this data via API to display it in your dashboard, without storing any metrics
-              on our end.
+              Ilm does not currently connect to Google Analytics or Search Console. Those screens
+              are marked Coming Soon and do not display invented metrics. A generated site loads
+              Google Analytics only when you explicitly commit an analytics ID to its settings.
             </p>
           </section>
         </main>

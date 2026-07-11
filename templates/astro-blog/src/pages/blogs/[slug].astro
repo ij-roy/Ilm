@@ -1,98 +1,24 @@
 ---
-import { getPublishedPosts } from "../../template/posts";
-import { getSeoConfigPath } from "../../template/posts";
-import { marked } from "marked";
-import { readFile } from "node:fs/promises";
+import { getBlogUrl, getPublishedPosts, getSiteSettings } from "../../template/posts";
 
 export async function getStaticPaths() {
+  const settings = await getSiteSettings();
   const posts = await getPublishedPosts();
-  return posts.map((post) => ({
-    params: { slug: post.slug },
-    props: { post }
-  }));
+  return posts.map((post) => ({ params: { slug: post.slug }, props: { post, settings } }));
 }
 
-const { post } = Astro.props;
-
-let googleAnalyticsId: string | undefined = undefined;
-let canonicalBaseUrl = "https://example.com";
-let googleSearchConsoleId: string | undefined = undefined;
-
-try {
-  const content = await readFile(getSeoConfigPath(), "utf-8");
-
-  const gaMatch = content.match(/googleAnalyticsId:\s*["']([^"']+)["']/);
-  if (gaMatch && gaMatch[1]) googleAnalyticsId = gaMatch[1];
-
-  const canonicalMatch = content.match(/canonicalBaseUrl:\s*["']([^"']+)["']/);
-  if (canonicalMatch && canonicalMatch[1]) canonicalBaseUrl = canonicalMatch[1];
-
-  const gscMatch = content.match(/googleSearchConsoleId:\s*["']([^"']+)["']/);
-  if (gscMatch && gscMatch[1]) googleSearchConsoleId = gscMatch[1];
-} catch {
-  // fallback
-}
-
-const canonicalUrl = `${canonicalBaseUrl.replace(/\/$/, "")}/blogs/${post.slug}/`;
-
-const jsonLd = {
-  "@context": "https://schema.org",
-  "@type": "BlogPosting",
-  headline: post.title,
-  description: post.description,
-  url: canonicalUrl,
-  datePublished: new Date().toISOString()
-};
-
-const htmlBody = marked.parse(post.body);
+const { post, settings } = Astro.props;
+const destination = getBlogUrl(settings, post.slug, import.meta.env.BASE_URL);
 ---
 
 <!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width" />
-    <title>{post.title} | Ilm Starter</title>
-    <meta name="description" content={post.description} />
-    <link rel="canonical" href={canonicalUrl} />
-
-    {googleSearchConsoleId && (
-      <meta name="google-site-verification" content={googleSearchConsoleId} />
-    )}
-
-    {googleAnalyticsId && (
-      <>
-        <script type="text/javascript" is:inline async src={`https://www.googletagmanager.com/gtag/js?id=${googleAnalyticsId}`}></script>
-        <script type="text/javascript" is:inline define:vars={{ googleAnalyticsId }}>
-          window.dataLayer = window.dataLayer || [];
-          function gtag(){dataLayer.push(arguments);}
-          gtag('js', new Date());
-          gtag('config', googleAnalyticsId);
-        </script>
-      </>
-    )}
-
-    <script type="application/ld+json" is:inline set:html={JSON.stringify(jsonLd)} />
-
-    <style>
-      body { font-family: sans-serif; line-height: 1.6; color: #0f172a; max-width: 800px; margin: 0 auto; padding: 2rem; }
-      h1 { font-size: 2.5rem; margin-bottom: 0.5rem; }
-      .description { color: #475569; font-size: 1.25rem; margin-bottom: 2rem; border-bottom: 1px solid #e2e8f0; padding-bottom: 1rem; }
-      .content img { max-width: 100%; height: auto; border-radius: 8px; }
-      .content pre { padding: 1rem; background: #f1f5f9; border-radius: 8px; overflow-x: auto; }
-      a { color: #3b82f6; text-decoration: none; }
-      a:hover { text-decoration: underline; }
-      .back-link { display: inline-block; margin-bottom: 2rem; color: #64748b; }
-    </style>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta http-equiv="refresh" content={`0;url=${destination}`} />
+    <link rel="canonical" href={new URL(destination, settings.canonicalUrl).toString()} />
+    <title>Moved | {settings.title}</title>
   </head>
-  <body>
-    <a href="/" class="back-link">Back Home</a>
-    <main>
-      <article>
-        <h1>{post.title}</h1>
-        <p class="description">{post.description}</p>
-        <div class="content" set:html={htmlBody} />
-      </article>
-    </main>
-  </body>
+  <body><p>This blog moved to <a href={destination}>{destination}</a>.</p></body>
 </html>

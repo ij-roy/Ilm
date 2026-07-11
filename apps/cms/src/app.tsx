@@ -1,5 +1,13 @@
 import * as React from "react";
-import { BrowserRouter, Navigate, NavLink, Route, Routes, useLocation } from "react-router-dom";
+import {
+  BrowserRouter,
+  Navigate,
+  NavLink,
+  Route,
+  Routes,
+  useLocation,
+  useNavigate
+} from "react-router-dom";
 import {
   BarChart3,
   CheckCircle2,
@@ -26,10 +34,11 @@ import {
   GitBranch,
   RefreshCw,
   ShieldCheck,
-  GripVertical
+  GripVertical,
+  Menu,
+  X
 } from "lucide-react";
 import { generateGeminiSuggestion, AiSuggestion, AiSuggestionKind } from "@ilm/ai";
-import { createGoogleOAuthUrl } from "@ilm/analytics";
 import {
   estimateReadingTimeMinutes,
   extractOutline,
@@ -53,8 +62,12 @@ import {
 } from "@ilm/publishing";
 import {
   DraftFrontmatter,
+  DraftFrontmatterSchema,
+  PostFrontmatterSchema,
+  ContentDocument,
   RepositoryEntry,
   RepositoryLayout,
+  parseContentDocument,
   validateRepositoryStructure
 } from "@ilm/repository";
 import { generateSeoMetadata, generateSlug, scoreSeo } from "@ilm/seo";
@@ -62,6 +75,14 @@ import { LandingPage } from "./landing";
 import { DocsPage } from "./docs";
 import { PrivacyPage } from "./privacy";
 import { Button } from "@ilm/ui";
+import {
+  createOAuthState,
+  createRepositoryStorageKey,
+  migrateLegacyCmsState,
+  parseOAuthState,
+  sanitizeStateForStorage,
+  type StoredCmsStateV2
+} from "./lib/persistence";
 
 type ConnectedRepository = {
   readonly owner: string;
@@ -82,6 +103,11 @@ type DraftRecord = {
   readonly updatedAt: string;
   readonly savedSha?: string;
   readonly publishedSha?: string;
+  readonly kind?: "draft" | "blog";
+  readonly path?: string;
+  readonly blobSha?: string;
+  readonly savedSlug?: string;
+  readonly publishedAt?: string;
 };
 
 type MediaRecord = {
@@ -94,6 +120,7 @@ type MediaRecord = {
   readonly caption: string;
   readonly path: string;
   readonly contentBase64?: string;
+  readonly previewUrl?: string;
 };
 
 type PublishEvent = {
@@ -104,10 +131,21 @@ type PublishEvent = {
 };
 
 type AppMetadata = {
+  readonly apiVersion: number;
   readonly appId: string;
   readonly clientId: string;
   readonly name: string;
   readonly htmlUrl: string;
+};
+
+type SiteSetupPlan = {
+  readonly headSha: string;
+  readonly templateVersion: string;
+  readonly additions: readonly string[];
+  readonly updates: readonly string[];
+  readonly conflicts: readonly string[];
+  readonly unchanged: readonly string[];
+  readonly pagesStatus: string;
 };
 
 type AuthSession = {
@@ -143,7 +181,9 @@ type CmsState = {
   readonly geminiEncryptedKey: string;
   readonly googleAnalyticsId: string;
   readonly siteUrl: string;
+  readonly blogPath: string;
   readonly isInitializingTemplate?: boolean;
+  readonly siteSetupPlan?: SiteSetupPlan;
 };
 
 const navItems = [
@@ -364,7 +404,8 @@ async function decryptData(ciphertextBase64: string, passphrase: string): Promis
   return new TextDecoder().decode(decrypted);
 }
 
-const storageKey = "ilm.cms.state.v1";
+const storageKey = "ilm.cms.state.v2";
+const legacyStorageKey = "ilm.cms.state.v1";
 const authSessionKey = "ilm.auth.session";
 const pendingAuthStateKey = "ilm.auth.pendingState";
 const defaultLocalGithubClient = new LocalGitHubClient();
@@ -394,21 +435,32 @@ function createInitialState(): CmsState {
     geminiApiKey: "",
     geminiEncryptedKey: "",
     googleAnalyticsId: "",
-    siteUrl: ""
+    siteUrl: "",
+    blogPath: "blog"
   };
 }
 
 function readState(): CmsState {
   if (typeof window === "undefined") return createInitialState();
 
-  const stored = window.localStorage.getItem(storageKey);
+  const stored =
+    window.localStorage.getItem(storageKey) ?? window.localStorage.getItem(legacyStorageKey);
   if (!stored) return createInitialState();
 
   try {
-    const parsed = JSON.parse(stored) as CmsState;
+    const migrated = migrateLegacyCmsState(JSON.parse(stored));
+    const parsed = (
+      migrated.selectedRepositoryKey
+        ? migrated.workspaces[migrated.selectedRepositoryKey]
+        : undefined
+    ) as CmsState | undefined;
+    if (!parsed)
+      return { ...createInitialState(), geminiEncryptedKey: migrated.geminiEncryptedKey ?? "" };
     return {
       ...createInitialState(),
       ...parsed,
+      geminiApiKey: "",
+      geminiEncryptedKey: migrated.geminiEncryptedKey ?? parsed.geminiEncryptedKey ?? "",
       activeDraft: parsed.activeDraft ?? initialDraft,
       drafts: parsed.drafts ?? [],
       posts: parsed.posts ?? [],
@@ -416,7 +468,8 @@ function readState(): CmsState {
       events: parsed.events ?? [],
       livePostUrl: parsed.livePostUrl ?? "",
       siteHomeUrl: parsed.siteHomeUrl ?? "",
-      siteUrl: parsed.siteUrl ?? ""
+      siteUrl: parsed.siteUrl ?? "",
+      blogPath: parsed.blogPath ?? "blog"
     };
   } catch {
     return createInitialState();
@@ -502,7 +555,17 @@ function sanitizeCmsStateForStorage(state: CmsState): CmsState {
   void _userToken;
   void _accessToken;
   void _installationId;
-  return safeState;
+  return sanitizeStateForStorage(safeState);
+}
+
+function readStoredCmsEnvelope(): StoredCmsStateV2 {
+  const stored = window.localStorage.getItem(storageKey);
+  if (!stored) return { schemaVersion: 2, workspaces: {} };
+  try {
+    return migrateLegacyCmsState(JSON.parse(stored));
+  } catch {
+    return { schemaVersion: 2, workspaces: {} };
+  }
 }
 
 export function App() {
@@ -515,6 +578,7 @@ export function App() {
 }
 
 function CmsApplication() {
+  const navigate = useNavigate();
   const [state, setState] = React.useState<CmsState>(() => readState());
   const [authSession, setAuthSession] = React.useState<AuthSession | undefined>(() =>
     readAuthSession()
@@ -539,7 +603,24 @@ function CmsApplication() {
   }, [status]);
 
   React.useEffect(() => {
-    window.localStorage.setItem(storageKey, JSON.stringify(sanitizeCmsStateForStorage(state)));
+    const current = readStoredCmsEnvelope();
+    const repositoryKey = state.repository
+      ? createRepositoryStorageKey(state.repository)
+      : current.selectedRepositoryKey;
+    const safeState = sanitizeCmsStateForStorage(state);
+    const next: StoredCmsStateV2 = {
+      schemaVersion: 2,
+      selectedRepositoryKey: repositoryKey,
+      workspaces: repositoryKey
+        ? {
+            ...current.workspaces,
+            [repositoryKey]: safeState as unknown as Record<string, unknown>
+          }
+        : current.workspaces,
+      geminiEncryptedKey: state.geminiEncryptedKey || undefined
+    };
+    window.localStorage.setItem(storageKey, JSON.stringify(next));
+    window.localStorage.removeItem(legacyStorageKey);
   }, [state]);
 
   React.useEffect(() => {
@@ -568,7 +649,9 @@ function CmsApplication() {
         if (!res.ok) throw new Error("Metadata request failed");
         const text = await res.text();
         try {
-          return JSON.parse(text) as AppMetadata;
+          const metadata = JSON.parse(text) as AppMetadata;
+          if (metadata.apiVersion !== 2) throw new Error("Unsupported auth worker API");
+          return metadata;
         } catch {
           throw new Error("Response is not valid JSON");
         }
@@ -592,17 +675,14 @@ function CmsApplication() {
   }, []);
 
   React.useEffect(() => {
-    const queryParams = new URLSearchParams(window.location.search);
     const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ""));
 
-    // Check hash for security, but fallback to query params for backward compatibility
-    const installationId = hashParams.get("installation_id") || queryParams.get("installation_id");
-    const userToken = hashParams.get("user_token") || queryParams.get("user_token");
-    const errorMsg = hashParams.get("error") || queryParams.get("error");
-    const errorDescription =
-      hashParams.get("error_description") || queryParams.get("error_description") || undefined;
-    const returnedState = hashParams.get("state") || queryParams.get("state");
-    const setupAction = hashParams.get("setup_action") || queryParams.get("setup_action");
+    const installationId = hashParams.get("installation_id");
+    const userToken = hashParams.get("user_token");
+    const errorMsg = hashParams.get("error");
+    const errorDescription = hashParams.get("error_description") || undefined;
+    const returnedState = hashParams.get("state");
+    const setupAction = hashParams.get("setup_action");
 
     if (errorMsg) {
       const message = describeAuthError(errorMsg, errorDescription);
@@ -613,7 +693,14 @@ function CmsApplication() {
       window.history.replaceState({}, document.title, window.location.pathname);
     } else if (userToken) {
       const expectedState = window.sessionStorage.getItem(pendingAuthStateKey);
-      if (!expectedState || returnedState !== expectedState) {
+      const returnedNonce = (() => {
+        try {
+          return returnedState ? parseOAuthState(returnedState).nonce : "";
+        } catch {
+          return "";
+        }
+      })();
+      if (!expectedState || returnedNonce !== expectedState) {
         setAuthMessage("GitHub session could not be verified.");
         setStatus("GitHub session could not be verified.");
         window.sessionStorage.removeItem(pendingAuthStateKey);
@@ -666,33 +753,83 @@ function CmsApplication() {
   }, [state.repository, activeGithubClient]);
 
   React.useEffect(() => {
+    if (
+      !state.repository ||
+      !authSession?.accessToken ||
+      isExpired(authSession.accessTokenExpiresAt)
+    ) {
+      return;
+    }
+    let cancelled = false;
+    setStatus("Loading blogs and drafts from GitHub...");
+    Promise.all([
+      activeGithubClient.listMarkdownDocuments(state.repository, RepositoryLayout.drafts),
+      activeGithubClient.listMarkdownDocuments(state.repository, RepositoryLayout.posts)
+    ])
+      .then(([draftFiles, blogFiles]) => {
+        if (cancelled) return;
+        const drafts = draftFiles.map((file) =>
+          toDraftRecord(
+            parseContentDocument("draft", file.path, file.content, { blobSha: file.blobSha })
+          )
+        );
+        const posts = blogFiles.map((file) =>
+          toDraftRecord(
+            parseContentDocument("blog", file.path, file.content, { blobSha: file.blobSha })
+          )
+        );
+        setState((current) => ({
+          ...current,
+          drafts,
+          posts,
+          activeDraft:
+            current.activeDraft.path || current.activeDraft.updatedAt !== initialDraft.updatedAt
+              ? current.activeDraft
+              : (drafts[0] ?? posts[0] ?? current.activeDraft)
+        }));
+        setStatus(`Loaded ${posts.length} blogs and ${drafts.length} drafts.`);
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) setStatus(`Could not load repository content: ${(error as Error).message}`);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    state.repository,
+    authSession?.accessToken,
+    authSession?.accessTokenExpiresAt,
+    activeGithubClient
+  ]);
+
+  React.useEffect(() => {
     if (!state.repository) return;
 
     activeGithubClient
-      .getFileContent(
-        {
-          owner: state.repository.owner,
-          repo: state.repository.repo,
-          branch: state.repository.branch
-        },
-        RepositoryLayout.seoConfig
-      )
-      .then((content) => {
-        if (!content) return;
-        const match = content.match(/googleAnalyticsId:\s*["']([^"']+)["']/);
-        if (match && match[1]) {
-          setState((curr) => ({ ...curr, googleAnalyticsId: match[1] }));
-        }
+      .getTextFile(state.repository, "config/site.json")
+      .then((file) => {
+        if (!file) return;
+        const settings = JSON.parse(file.content) as {
+          canonicalUrl?: string;
+          blogPath?: string;
+          googleAnalyticsId?: string;
+        };
+        setState((curr) => ({
+          ...curr,
+          siteUrl: settings.canonicalUrl ?? curr.siteUrl,
+          blogPath: settings.blogPath ?? curr.blogPath,
+          googleAnalyticsId: settings.googleAnalyticsId ?? curr.googleAnalyticsId
+        }));
       })
       .catch((err) => {
-        console.warn("Could not read config/seo.ts on repository connect:", err);
+        console.warn("Could not read config/site.json on repository connect:", err);
       });
   }, [state.repository, activeGithubClient]);
 
   const seoInput = {
     title: state.activeDraft.title,
     description: state.activeDraft.description,
-    canonicalBaseUrl: state.siteUrl || "https://example.com",
+    canonicalBaseUrl: `${(state.siteUrl || "https://example.com").replace(/\/$/, "")}/${state.blogPath}`,
     slug: state.activeDraft.slug,
     coverImage: state.media.find((item) => item.kind === "cover")?.path
   };
@@ -717,14 +854,21 @@ function CmsApplication() {
   }, [repoEntries]);
 
   const hasBlogRoute = React.useMemo(() => {
-    return repoEntries.some((e) => e.path === "src/pages/blogs/[slug].astro");
+    return repoEntries.some(
+      (e) => e.path === "src/pages/[...path].astro" || e.path === "src/pages/blogs/[slug].astro"
+    );
   }, [repoEntries]);
 
   const hasDeployWorkflow = React.useMemo(() => {
-    return repoEntries.some((e) => e.path === ".github/workflows/deploy.yml");
+    return repoEntries.some(
+      (e) =>
+        e.path === ".github/workflows/ilm-pages.yml" || e.path === ".github/workflows/deploy.yml"
+    );
   }, [repoEntries]);
 
-  const staticSiteReady = Boolean(state.repository && hasFrontend && hasBlogRoute && hasDeployWorkflow);
+  const staticSiteReady = Boolean(
+    state.repository && hasFrontend && hasBlogRoute && hasDeployWorkflow
+  );
 
   React.useEffect(() => {
     if (!state.repository || !hasFrontend || !hasBlogRoute) return;
@@ -750,22 +894,78 @@ function CmsApplication() {
       setStatus("Repository access not granted");
       return;
     }
+    const workerUrl = import.meta.env.VITE_GITHUB_AUTH_WORKER_URL;
+    if (!workerUrl || !authSession.userToken) {
+      setStatus("The GitHub setup service is unavailable.");
+      return;
+    }
     setState((c) => ({ ...c, isInitializingTemplate: true }));
-    setStatus("Setting up your static blog site...");
+    setStatus(
+      state.siteSetupPlan
+        ? "Applying the approved site setup..."
+        : "Preparing a safe setup preview..."
+    );
     try {
-      const data = await requestInstallationToken(authSession.installationId, "pages-setup");
-      const setupGithubClient = new GitHubClient(data.token);
-      const result = await setupGithubClient.initializeAstroTemplate(state.repository);
-      const site = await setupGithubClient.ensurePagesSite(state.repository);
+      const endpoint = state.siteSetupPlan ? "apply" : "plan";
+      if (!state.siteSetupPlan) {
+        const response = await fetch(`${workerUrl}/github/app/site-setup/${endpoint}`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${authSession.userToken}`
+          },
+          body: JSON.stringify({
+            installationId: Number(authSession.installationId),
+            owner: state.repository.owner,
+            repo: state.repository.repo
+          })
+        });
+        const plan = (await response.json()) as SiteSetupPlan & {
+          error?: string;
+          details?: string;
+        };
+        if (!response.ok)
+          throw new Error(plan.details || plan.error || "Could not prepare setup preview");
+        setState((current) => ({ ...current, siteSetupPlan: plan }));
+        setStatus("Review the setup changes before applying them.");
+        return;
+      }
+
+      const contentToken = await requestInstallationToken(authSession.installationId, "content");
+      const contentClient = new GitHubClient(contentToken.token);
+      const response = await fetch(`${workerUrl}/github/app/site-setup/apply`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${authSession.userToken}`
+        },
+        body: JSON.stringify({
+          installationId: Number(authSession.installationId),
+          owner: state.repository.owner,
+          repo: state.repository.repo,
+          expectedHeadSha: state.siteSetupPlan.headSha,
+          approvedConflictPaths: state.siteSetupPlan.conflicts
+        })
+      });
+      const applied = (await response.json()) as {
+        headSha?: string;
+        error?: string;
+        details?: string;
+      };
+      if (!response.ok)
+        throw new Error(applied.details || applied.error || "Could not apply setup");
+      const templateResult = await contentClient.initializeAstroTemplate(state.repository);
+      const site = await contentClient.getPagesSite(state.repository);
       setState((current) => ({
         ...current,
-        siteHomeUrl: site.htmlUrl,
-        siteUrl: current.siteUrl || site.htmlUrl
+        siteHomeUrl: site?.htmlUrl ?? current.siteHomeUrl,
+        siteUrl: current.siteUrl || site?.htmlUrl || "",
+        siteSetupPlan: undefined
       }));
-      setStatus(`Static blog site ready at ${result.sha}`);
+      setStatus(`Static blog site setup applied at ${templateResult.sha}`);
       addEvent("repository", "Initialized Astro template");
 
-      const entries = await setupGithubClient.getRepositoryEntries(state.repository);
+      const entries = await contentClient.getRepositoryEntries(state.repository);
       setRepoEntries(entries);
     } catch (err: unknown) {
       setStatus(`Failed to initialize template: ${(err as Error).message}`);
@@ -833,14 +1033,22 @@ function CmsApplication() {
     const repository = state.availableRepositories?.find((r) => r.id === repoId);
     if (!repository) return;
 
+    const selectedRepository = {
+      owner: repository.fullName.split("/")[0] || "local",
+      repo: repository.name,
+      branch: repository.defaultBranch,
+      fullName: repository.fullName
+    };
+    const repositoryKey = createRepositoryStorageKey(selectedRepository);
+    const storedWorkspace = readStoredCmsEnvelope().workspaces[repositoryKey] as
+      Partial<CmsState> | undefined;
     setState((current) => ({
-      ...current,
-      repository: {
-        owner: repository.fullName.split("/")[0] || "local",
-        repo: repository.name,
-        branch: repository.defaultBranch,
-        fullName: repository.fullName
-      }
+      ...createInitialState(),
+      ...storedWorkspace,
+      geminiApiKey: current.geminiApiKey,
+      geminiEncryptedKey: current.geminiEncryptedKey,
+      availableRepositories: current.availableRepositories,
+      repository: selectedRepository
     }));
     setStatus(`Connected ${repository.fullName}. Fetching access token...`);
     addEvent("repository", `Connected ${repository.fullName}`);
@@ -905,13 +1113,25 @@ function CmsApplication() {
     setStatus("Disconnected GitHub");
   }
 
+  function clearLocalData() {
+    window.localStorage.removeItem(storageKey);
+    window.localStorage.removeItem(legacyStorageKey);
+    window.sessionStorage.removeItem(authSessionKey);
+    window.sessionStorage.removeItem(pendingAuthStateKey);
+    setAuthSession(undefined);
+    setState(createInitialState());
+    setAuthMessage("");
+    setStatus("Local Ilm data and session credentials were cleared.");
+  }
+
   function handleConnectGitHub() {
     if (appMetadata) {
       const nonce = createAuthNonce();
       window.sessionStorage.setItem(pendingAuthStateKey, nonce);
       setAuthMessage("");
       setStatus("Connecting to GitHub...");
-      window.location.href = `https://github.com/login/oauth/authorize?client_id=${appMetadata.clientId}&state=${encodeURIComponent(nonce)}`;
+      const oauthState = createOAuthState(nonce, window.location.origin);
+      window.location.href = `https://github.com/login/oauth/authorize?client_id=${appMetadata.clientId}&state=${encodeURIComponent(oauthState)}`;
     } else {
       setAuthMessage("Could not load GitHub App metadata");
     }
@@ -1086,24 +1306,69 @@ function CmsApplication() {
       return;
     }
 
-    const frontmatter = buildDraftFrontmatter(state.activeDraft);
+    let frontmatter: DraftFrontmatter;
+    try {
+      frontmatter = buildDraftFrontmatter(state.activeDraft);
+    } catch (error: unknown) {
+      setStatus(`Draft details are incomplete: ${(error as Error).message}`);
+      return;
+    }
     const plan = createDraftSavePlan({
       slug: state.activeDraft.slug,
       title: state.activeDraft.title,
-      markdown: state.activeDraft.markdown,
-      frontmatter
+      markdown: normalizeMediaMarkdown(state.activeDraft.markdown, state.media),
+      frontmatter,
+      media: state.media
+        .filter((item) => item.contentBase64)
+        .map((item) => ({
+          location: { kind: item.kind, path: item.path, fileName: item.fileName },
+          content: item.contentBase64!,
+          encoding: "base64" as const
+        }))
     });
     if (!plan.ok) {
       setStatus(plan.error.message);
       return;
     }
 
-    const result = await activeGithubClient.executeCommit(
-      manifestToCommitRequest(state.repository, plan.value.commit)
-    );
+    const request = manifestToCommitRequest(state.repository, plan.value.commit);
+    const previousPath = state.activeDraft.path;
+    const files = request.files.map((file) => ({
+      ...file,
+      expectedSha:
+        file.path === previousPath || file.path === plan.value.draftPath
+          ? (state.activeDraft.blobSha ?? null)
+          : undefined
+    }));
+    if (previousPath && previousPath !== plan.value.draftPath) {
+      files.push({
+        path: previousPath,
+        content: "",
+        encoding: "utf-8",
+        operation: "delete",
+        expectedSha: state.activeDraft.blobSha ?? null
+      });
+    }
+    let result;
+    try {
+      result = await activeGithubClient.executeCommit({ ...request, files });
+    } catch (error: unknown) {
+      setStatus(
+        error instanceof Error && error.name === "GitHubConflictError"
+          ? "This draft changed on GitHub. Reload it before overwriting the remote version."
+          : `Draft save failed: ${(error as Error).message}`
+      );
+      return;
+    }
     setState((current) => ({
       ...current,
-      activeDraft: { ...current.activeDraft, savedSha: result.sha },
+      activeDraft: {
+        ...current.activeDraft,
+        savedSha: result.sha,
+        path: plan.value.draftPath,
+        savedSlug: generateSlug(current.activeDraft.slug),
+        blobSha: undefined
+      },
       drafts: upsertById(current.drafts, { ...current.activeDraft, savedSha: result.sha })
     }));
     setStatus(`Draft saved at ${result.sha}`);
@@ -1111,12 +1376,12 @@ function CmsApplication() {
   }
 
   function createLivePostUrl(siteHomeUrl: string, slug: string): string {
-    return `${siteHomeUrl.replace(/\/$/, "")}/blogs/${generateSlug(slug)}/`;
+    return `${siteHomeUrl.replace(/\/$/, "")}/${state.blogPath}/${generateSlug(slug)}/`;
   }
 
   async function verifyLiveUrl(url: string): Promise<boolean> {
     const workerUrl = import.meta.env.VITE_GITHUB_AUTH_WORKER_URL;
-    if (!workerUrl) return true;
+    if (!workerUrl) return false;
 
     const response = await fetch(`${workerUrl}/live-url/verify`, {
       method: "POST",
@@ -1126,6 +1391,39 @@ function CmsApplication() {
     if (!response.ok) return false;
     const data = (await response.json()) as { reachable?: boolean };
     return Boolean(data.reachable);
+  }
+
+  function openDocument(document: DraftRecord) {
+    setState((current) => ({ ...current, activeDraft: document }));
+    navigate("/editor");
+  }
+
+  function createNewBlog() {
+    const now = new Date().toISOString();
+    setState((current) => ({
+      ...current,
+      activeDraft: {
+        ...initialDraft,
+        id: `draft-${crypto.randomUUID()}`,
+        title: "Untitled blog",
+        slug: "untitled-blog",
+        description: "",
+        markdown: "# Untitled blog\n\nStart writing here.",
+        updatedAt: now,
+        savedSha: undefined,
+        savedSlug: undefined,
+        publishedAt: undefined
+      }
+    }));
+    navigate("/editor");
+  }
+
+  async function verifyLiveUrlWithRetry(url: string): Promise<boolean> {
+    for (let attempt = 0; attempt < 12; attempt++) {
+      if (await verifyLiveUrl(url)) return true;
+      if (attempt < 11) await new Promise((resolve) => setTimeout(resolve, 5_000));
+    }
+    return false;
   }
 
   async function publishPost() {
@@ -1139,20 +1437,35 @@ function CmsApplication() {
       return;
     }
 
+    const publishedAt = state.activeDraft.publishedAt ?? new Date().toISOString();
+    const parsedFrontmatter = PostFrontmatterSchema.safeParse({
+      ...buildDraftFrontmatter(state.activeDraft),
+      description: state.activeDraft.description,
+      slug: generateSlug(state.activeDraft.slug),
+      publishedAt,
+      updatedAt: new Date().toISOString(),
+      author: state.activeDraft.author
+    });
+    if (!parsedFrontmatter.success) {
+      setStatus(
+        `Blog details are incomplete: ${parsedFrontmatter.error.issues[0]?.message ?? "invalid metadata"}`
+      );
+      return;
+    }
     const plan = createPublishPlan({
       slug: state.activeDraft.slug,
       title: state.activeDraft.title,
-      markdown: state.activeDraft.markdown,
-      draftSlug: state.activeDraft.slug,
+      markdown: normalizeMediaMarkdown(state.activeDraft.markdown, state.media),
+      draftSlug: state.activeDraft.savedSlug ?? state.activeDraft.slug,
       hasRemoteDraft: !!state.activeDraft.savedSha,
-      frontmatter: {
-        ...buildDraftFrontmatter(state.activeDraft),
-        description: state.activeDraft.description,
-        slug: state.activeDraft.slug,
-        publishedAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-        author: state.activeDraft.author
-      }
+      frontmatter: parsedFrontmatter.data,
+      media: state.media
+        .filter((item) => item.contentBase64)
+        .map((item) => ({
+          location: { kind: item.kind, path: item.path, fileName: item.fileName },
+          content: item.contentBase64!,
+          encoding: "base64" as const
+        }))
     });
     if (!plan.ok) {
       setStatus(plan.error.message);
@@ -1194,9 +1507,19 @@ function CmsApplication() {
 
     let result;
     try {
-      result = await activeGithubClient.executeCommit(
-        manifestToCommitRequest(state.repository, plan.value.commit)
-      );
+      const publishRequest = manifestToCommitRequest(state.repository, plan.value.commit);
+      result = await activeGithubClient.executeCommit({
+        ...publishRequest,
+        files: publishRequest.files.map((file) => ({
+          ...file,
+          expectedSha:
+            file.path === state.activeDraft.path
+              ? (state.activeDraft.blobSha ?? null)
+              : file.path === plan.value.postPath && state.activeDraft.kind === "blog"
+                ? (state.activeDraft.blobSha ?? null)
+                : undefined
+        }))
+      });
     } catch (err: unknown) {
       setState((c) => ({ ...c, publishProgress: "failed" }));
       setStatus(`Commit failed: ${(err as Error).message}`);
@@ -1206,15 +1529,13 @@ function CmsApplication() {
     setState((current) => ({
       ...current,
       activeDraft: { ...current.activeDraft, publishedSha: result.sha },
-      posts: upsertById(current.posts, { ...current.activeDraft, publishedSha: result.sha }),
-      drafts: current.drafts.filter((draft) => draft.id !== current.activeDraft.id),
       publishProgress: "building"
     }));
     setStatus(`Committed at ${result.sha}. Waiting for deployment...`);
     addEvent("publish", "Committed blog markdown");
 
-    for (let attempts = 0; attempts < 30; attempts++) {
-      await new Promise((res) => setTimeout(res, 2000));
+    for (let attempts = 0; attempts < 90; attempts++) {
+      await new Promise((res) => setTimeout(res, 10_000));
 
       try {
         const status = await activeGithubClient.getWorkflowStatusForCommit(
@@ -1225,13 +1546,20 @@ function CmsApplication() {
           setState((c) => ({ ...c, publishProgress: "verifying-live-url" }));
           setStatus("Verifying live blog URL...");
           const livePostUrl = createLivePostUrl(pagesSite.htmlUrl, state.activeDraft.slug);
-          const reachable = await verifyLiveUrl(livePostUrl);
+          const reachable = await verifyLiveUrlWithRetry(livePostUrl);
           if (reachable) {
             setState((c) => ({
               ...c,
               publishProgress: "live",
               livePostUrl,
-              siteHomeUrl: pagesSite.htmlUrl
+              siteHomeUrl: pagesSite.htmlUrl,
+              posts: upsertById(c.posts, {
+                ...c.activeDraft,
+                kind: "blog",
+                publishedSha: result.sha,
+                publishedAt
+              }),
+              drafts: c.drafts.filter((draft) => draft.id !== c.activeDraft.id)
             }));
             setStatus("Live blog verified.");
             addEvent("publish", "Live blog verified on GitHub Pages");
@@ -1337,6 +1665,7 @@ function CmsApplication() {
       DASHBOARD_ACTIVITY_WIDTH_MAX
     )
   );
+  const [mobileNavOpen, setMobileNavOpen] = React.useState(false);
   const resizeSessionRef = React.useRef<{
     readonly kind: "sidebar" | "activity";
     readonly startX: number;
@@ -1344,7 +1673,10 @@ function CmsApplication() {
   } | null>(null);
 
   React.useEffect(() => {
-    window.localStorage.setItem(DASHBOARD_SIDEBAR_COLLAPSED_STORAGE_KEY, String(dashboardSidebarCollapsed));
+    window.localStorage.setItem(
+      DASHBOARD_SIDEBAR_COLLAPSED_STORAGE_KEY,
+      String(dashboardSidebarCollapsed)
+    );
   }, [dashboardSidebarCollapsed]);
 
   React.useEffect(() => {
@@ -1352,7 +1684,10 @@ function CmsApplication() {
   }, [dashboardSidebarWidth]);
 
   React.useEffect(() => {
-    window.localStorage.setItem(DASHBOARD_ACTIVITY_WIDTH_STORAGE_KEY, String(dashboardActivityWidth));
+    window.localStorage.setItem(
+      DASHBOARD_ACTIVITY_WIDTH_STORAGE_KEY,
+      String(dashboardActivityWidth)
+    );
   }, [dashboardActivityWidth]);
 
   const stopDashboardResize = React.useCallback(() => {
@@ -1450,13 +1785,35 @@ function CmsApplication() {
 
   return (
     <div className="min-h-screen bg-zinc-50 text-zinc-950">
+      <header className="sticky top-0 z-40 flex h-16 items-center justify-between border-b border-zinc-200 bg-white px-4 lg:hidden">
+        <div className="flex min-w-0 items-center gap-3">
+          <img src="/icon-192.png" alt="" className="h-9 w-9 rounded-md" />
+          <div className="min-w-0">
+            <p className="text-sm font-semibold">Ilm</p>
+            <p className="truncate text-xs text-zinc-500">
+              {state.repository?.fullName ?? "Publishing workspace"}
+            </p>
+          </div>
+        </div>
+        <Button
+          type="button"
+          size="icon"
+          variant="ghost"
+          aria-label={mobileNavOpen ? "Close navigation" : "Open navigation"}
+          onClick={() => setMobileNavOpen((open) => !open)}
+        >
+          {mobileNavOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
+        </Button>
+      </header>
       <div
         className="grid min-h-screen grid-cols-1 lg:min-h-screen lg:[grid-template-columns:var(--ilm-dashboard-sidebar-width)_minmax(0,1fr)]"
         style={{
           ["--ilm-dashboard-sidebar-width" as string]: `${dashboardSidebarWidthValue}px`
         }}
       >
-        <aside className="relative border-r border-zinc-200 bg-white">
+        <aside
+          className={`${mobileNavOpen ? "fixed inset-x-0 top-16 z-30 block max-h-[calc(100vh-4rem)] overflow-y-auto" : "hidden"} relative border-r border-zinc-200 bg-white lg:block`}
+        >
           <div className="flex items-center justify-between gap-3 border-b border-zinc-200 px-5 py-4">
             <div className="flex min-w-0 items-center gap-3">
               <div className="flex h-9 w-9 items-center justify-center rounded-md bg-zinc-950 text-sm font-semibold text-white">
@@ -1484,11 +1841,12 @@ function CmsApplication() {
                 to={item.href}
                 title={dashboardSidebarCollapsed ? item.label : undefined}
                 aria-label={item.label}
+                onClick={() => setMobileNavOpen(false)}
                 className={({ isActive }) =>
                   [
                     "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
                     dashboardSidebarCollapsed ? "lg:justify-center lg:px-2" : "",
-                    isActive ? "bg-zinc-950 text-white" : "text-zinc-700 hover:bg-zinc-100"
+                    isActive ? "bg-black !text-white" : "text-zinc-700 hover:bg-zinc-100"
                   ].join(" ")
                 }
               >
@@ -1585,8 +1943,10 @@ function CmsApplication() {
                     connected={repositoryConnected}
                     staticSiteReady={staticSiteReady}
                     isInitializingTemplate={state.isInitializingTemplate}
+                    siteSetupPlan={state.siteSetupPlan}
                     livePostUrl={state.livePostUrl}
                     siteHomeUrl={state.siteHomeUrl}
+                    blogPath={state.blogPath}
                     onInitializeTemplate={initializeTemplate}
                     onChange={updateDraft}
                     onGenerateSlug={generateSlugFromTitle}
@@ -1608,15 +1968,18 @@ function CmsApplication() {
                 )
               }
             />
-            <Route
-              path="/posts"
-              element={<Navigate to="/blogs" replace />}
-            />
+            <Route path="/posts" element={<Navigate to="/blogs" replace />} />
             <Route
               path="/blogs"
               element={
                 repositoryConnected ? (
-                  <ListPage title="Blogs" items={state.posts} connected={repositoryConnected} />
+                  <ListPage
+                    title="Blogs"
+                    items={state.posts}
+                    connected={repositoryConnected}
+                    onOpen={openDocument}
+                    onCreate={createNewBlog}
+                  />
                 ) : (
                   <AuthRequiredPage
                     pageName="Blogs"
@@ -1633,7 +1996,13 @@ function CmsApplication() {
               path="/drafts"
               element={
                 repositoryConnected ? (
-                  <ListPage title="Drafts" items={state.drafts} connected={repositoryConnected} />
+                  <ListPage
+                    title="Drafts"
+                    items={state.drafts}
+                    connected={repositoryConnected}
+                    onOpen={openDocument}
+                    onCreate={createNewBlog}
+                  />
                 ) : (
                   <AuthRequiredPage
                     pageName="Drafts"
@@ -1711,11 +2080,63 @@ function CmsApplication() {
                     geminiEncrypted={Boolean(state.geminiEncryptedKey)}
                     googleAnalyticsId={state.googleAnalyticsId}
                     siteUrl={state.siteUrl}
+                    blogPath={state.blogPath}
                     hasFrontend={hasFrontend}
                     isInitializingTemplate={state.isInitializingTemplate}
                     onSaveGeminiKey={handleSaveGeminiKey}
                     onClearGeminiKey={handleClearGeminiKey}
-                    onSaveSiteUrl={(url) => setState((curr) => ({ ...curr, siteUrl: url }))}
+                    onClearLocalData={clearLocalData}
+                    onSaveSiteSettings={async (url, blogPath) => {
+                      if (!state.repository) return;
+                      const normalizedPath = generateSlug(blogPath) || "blog";
+                      const currentFile = await activeGithubClient.getTextFile(
+                        state.repository,
+                        "config/site.json"
+                      );
+                      const currentSettings = currentFile
+                        ? (JSON.parse(currentFile.content) as Record<string, unknown>)
+                        : {};
+                      const content = JSON.stringify(
+                        {
+                          schemaVersion: 2,
+                          title: currentSettings.title ?? "Ilm Journal",
+                          description:
+                            currentSettings.description ??
+                            "Independent writing, published from your own repository.",
+                          canonicalUrl: url,
+                          blogPath: normalizedPath,
+                          author: currentSettings.author ?? {
+                            name: state.activeDraft.author || "Author"
+                          },
+                          theme: currentSettings.theme ?? {
+                            accent: "#0f766e",
+                            background: "#ffffff",
+                            text: "#18181b",
+                            typography: "editorial"
+                          },
+                          navigation: currentSettings.navigation ?? [{ label: "Home", href: "/" }],
+                          ...(state.googleAnalyticsId
+                            ? { googleAnalyticsId: state.googleAnalyticsId }
+                            : {})
+                        },
+                        null,
+                        2
+                      );
+                      await activeGithubClient.executeCommit({
+                        ...state.repository,
+                        message: "config: update Ilm site settings",
+                        files: [
+                          {
+                            path: "config/site.json",
+                            content: `${content}\n`,
+                            encoding: "utf-8",
+                            expectedSha: currentFile?.blobSha ?? null
+                          }
+                        ]
+                      });
+                      setState((curr) => ({ ...curr, siteUrl: url, blogPath: normalizedPath }));
+                      setStatus("Site settings saved to GitHub.");
+                    }}
                     onInitializeTemplate={initializeTemplate}
                   />
                 ) : (
@@ -1857,19 +2278,19 @@ function Dashboard({
         </button>
         <div className="min-w-0">
           <AuthSetupPanel
-          authStatus={authStatus}
-          authMessage={authMessage}
-          authSession={authSession}
-          appMetadataLoaded={appMetadataLoaded}
-          repositories={state.availableRepositories}
-          repository={state.repository}
-          repositoriesLoading={repositoriesLoading}
-          onConnect={onConnect}
-          onLoadRepositories={onLoadRepositories}
-          onSelectRepository={onSelectRepository}
-          onRefreshAccess={onRefreshAccess}
-          onDisconnectRepository={onDisconnectRepository}
-          onConfigureRepositories={onConfigureRepositories}
+            authStatus={authStatus}
+            authMessage={authMessage}
+            authSession={authSession}
+            appMetadataLoaded={appMetadataLoaded}
+            repositories={state.availableRepositories}
+            repository={state.repository}
+            repositoriesLoading={repositoriesLoading}
+            onConnect={onConnect}
+            onLoadRepositories={onLoadRepositories}
+            onSelectRepository={onSelectRepository}
+            onRefreshAccess={onRefreshAccess}
+            onDisconnectRepository={onDisconnectRepository}
+            onConfigureRepositories={onConfigureRepositories}
           />
         </div>
       </section>
@@ -2268,8 +2689,10 @@ function EditorPage({
   localRecoveryAvailable,
   staticSiteReady,
   isInitializingTemplate,
+  siteSetupPlan,
   livePostUrl,
   siteHomeUrl,
+  blogPath,
   onInitializeTemplate,
   onChange,
   onGenerateSlug,
@@ -2295,8 +2718,10 @@ function EditorPage({
   readonly connected: boolean;
   readonly staticSiteReady: boolean;
   readonly isInitializingTemplate?: boolean;
+  readonly siteSetupPlan?: SiteSetupPlan;
   readonly livePostUrl?: string;
   readonly siteHomeUrl?: string;
+  readonly blogPath: string;
   readonly onInitializeTemplate: () => void;
   readonly onChange: (patch: Partial<DraftRecord>) => void;
   readonly onGenerateSlug: () => void;
@@ -2307,7 +2732,7 @@ function EditorPage({
   readonly onAddMedia: (media: Omit<MediaRecord, "id">) => void;
 }) {
   const postDestinationUrl = siteHomeUrl
-    ? `${siteHomeUrl.replace(/\/$/, "")}/blogs/${draft.slug}/`
+    ? `${siteHomeUrl.replace(/\/$/, "")}/${blogPath}/${generateSlug(draft.slug)}/`
     : "";
   const publishDisabled =
     !connected ||
@@ -2372,17 +2797,18 @@ function EditorPage({
         const reader = new FileReader();
         reader.onload = () => {
           const base64 = (reader.result as string).split(",")[1];
+          const objectUrl = URL.createObjectURL(webpBlob);
           onAddMedia({
             ...plan.value,
             path: plan.value.location.path,
             contentBase64: base64,
+            previewUrl: objectUrl,
             caption: "",
             alt: plan.value.alt ?? ""
           });
 
           // Insert into editor
           if (editor) {
-            const objectUrl = URL.createObjectURL(webpBlob);
             editor
               .chain()
               .focus()
@@ -2462,18 +2888,34 @@ function EditorPage({
                 <div className="flex items-start gap-3">
                   <UploadCloud className="mt-0.5 h-5 w-5 text-blue-700" />
                   <div>
-                    <h2 className="text-sm font-semibold text-blue-950">Set Up Blog Site</h2>
+                    <h2 className="text-sm font-semibold text-blue-950">
+                      {siteSetupPlan ? "Review Site Setup" : "Set Up Blog Site"}
+                    </h2>
                     <p className="mt-1 text-sm text-blue-800">
-                      This repository needs the Astro blog files and GitHub Pages workflow before a
-                      blog can go live.
+                      {siteSetupPlan
+                        ? `Ilm will add ${siteSetupPlan.additions.length} managed files and replace ${siteSetupPlan.conflicts.length} approved conflicting files.`
+                        : "This repository needs the Astro blog files and GitHub Pages workflow before a blog can go live."}
                     </p>
+                    {siteSetupPlan && (
+                      <div className="mt-3 rounded-md border border-blue-200 bg-white p-3 text-xs text-zinc-700">
+                        {[...siteSetupPlan.additions, ...siteSetupPlan.conflicts].map((path) => (
+                          <p key={path} className="break-all py-0.5">
+                            {siteSetupPlan.conflicts.includes(path) ? "Replace" : "Add"}: {path}
+                          </p>
+                        ))}
+                      </div>
+                    )}
                     <Button
                       type="button"
                       className="mt-4"
                       onClick={onInitializeTemplate}
                       disabled={isInitializingTemplate}
                     >
-                      {isInitializingTemplate ? "Setting up..." : "Set Up Blog Site"}
+                      {isInitializingTemplate
+                        ? "Working..."
+                        : siteSetupPlan
+                          ? "Approve and Apply Setup"
+                          : "Review Setup Changes"}
                     </Button>
                   </div>
                 </div>
@@ -2526,9 +2968,7 @@ function EditorPage({
                 <span className="text-zinc-600">Status</span>
                 <span
                   className={`rounded-full px-2 py-1 text-xs font-semibold ${
-                    staticSiteReady
-                      ? "bg-green-100 text-green-700"
-                      : "bg-blue-100 text-blue-700"
+                    staticSiteReady ? "bg-green-100 text-green-700" : "bg-blue-100 text-blue-700"
                   }`}
                 >
                   {staticSiteReady ? "Ready to publish" : "Setup required"}
@@ -2744,6 +3184,35 @@ function MediaPage({
 }) {
   const [fileName, setFileName] = React.useState("cover.webp");
   const [alt, setAlt] = React.useState("Cover image");
+  const [selectedFile, setSelectedFile] = React.useState<File | null>(null);
+
+  async function addSelectedFile() {
+    if (!selectedFile || !alt.trim()) return;
+    if (selectedFile.size > 10 * 1024 * 1024) throw new Error("Media must be 10 MB or smaller");
+    const converted =
+      selectedFile.type.startsWith("image/") && selectedFile.type !== "image/gif"
+        ? await convertImageToWebP(selectedFile)
+        : selectedFile;
+    const targetName =
+      converted.type === "image/webp" ? `${fileName.replace(/\.[^/.]+$/, "")}.webp` : fileName;
+    const contentBase64 = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result).split(",")[1] ?? "");
+      reader.onerror = () => reject(new Error("Could not read media"));
+      reader.readAsDataURL(converted);
+    });
+    onAdd({
+      fileName: targetName,
+      kind: "cover",
+      mimeType: converted.type,
+      sizeBytes: converted.size,
+      alt: alt.trim(),
+      caption: "",
+      contentBase64,
+      previewUrl: URL.createObjectURL(converted)
+    });
+    setSelectedFile(null);
+  }
 
   return (
     <>
@@ -2757,24 +3226,26 @@ function MediaPage({
             <Field label="File name">
               <input value={fileName} onChange={(event) => setFileName(event.target.value)} />
             </Field>
+            <Field label="Choose file">
+              <input
+                type="file"
+                accept="image/png,image/jpeg,image/webp,image/gif,application/pdf,text/plain"
+                onChange={(event) => {
+                  const file = event.target.files?.[0] ?? null;
+                  setSelectedFile(file);
+                  if (file) setFileName(file.name);
+                }}
+              />
+            </Field>
             <Field label="Alt text">
               <input value={alt} onChange={(event) => setAlt(event.target.value)} />
             </Field>
             <Button
               type="button"
-              disabled={!connected}
-              onClick={() =>
-                onAdd({
-                  fileName,
-                  kind: "cover",
-                  mimeType: "image/webp",
-                  sizeBytes: 120_000,
-                  alt,
-                  caption: ""
-                })
-              }
+              disabled={!connected || !selectedFile || !alt.trim()}
+              onClick={() => void addSelectedFile()}
             >
-              Add Media
+              Add selected media
             </Button>
           </div>
         </Panel>
@@ -2803,11 +3274,15 @@ function MediaPage({
 function ListPage({
   title,
   items,
-  connected
+  connected,
+  onOpen,
+  onCreate
 }: {
   readonly title: string;
   readonly items: readonly DraftRecord[];
   readonly connected: boolean;
+  readonly onOpen: (item: DraftRecord) => void;
+  readonly onCreate: () => void;
 }) {
   return (
     <>
@@ -2815,25 +3290,38 @@ function ListPage({
         title={title}
         description={`${title} written through Ilm and stored in the selected repository.`}
       />
-      <section className="grid gap-3 p-6 lg:grid-cols-2">
-        {items.length === 0 ? (
-          <EmptyState
-            title={!connected ? "Repository not connected" : `No ${title.toLowerCase()} yet`}
-            description={
-              !connected
-                ? "Connect to GitHub to view content."
-                : "Use the editor to create content."
-            }
-          />
-        ) : (
-          items.map((item) => (
-            <article key={item.id} className="rounded-md border border-zinc-200 bg-white p-5">
-              <h2 className="text-lg font-semibold">{item.title}</h2>
-              <p className="mt-2 text-sm text-zinc-600">{item.description}</p>
-              <p className="mt-3 text-xs text-zinc-500">{item.slug}</p>
-            </article>
-          ))
-        )}
+      <section className="p-6">
+        <div className="mb-4 flex justify-end">
+          <Button onClick={onCreate}>New blog</Button>
+        </div>
+        <div className="grid gap-3 lg:grid-cols-2">
+          {items.length === 0 ? (
+            <EmptyState
+              title={!connected ? "Repository not connected" : `No ${title.toLowerCase()} yet`}
+              description={
+                !connected
+                  ? "Connect to GitHub to view content."
+                  : "Use the editor to create content."
+              }
+            />
+          ) : (
+            items.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => onOpen(item)}
+                className="rounded-md border border-zinc-200 bg-white p-5 text-left transition-colors hover:border-zinc-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900"
+              >
+                <h2 className="text-lg font-semibold">{item.title}</h2>
+                <p className="mt-2 text-sm text-zinc-600">{item.description}</p>
+                <p className="mt-3 text-xs text-zinc-500">{item.slug}</p>
+                <span className="mt-4 inline-block text-sm font-medium text-zinc-950">
+                  Open editor
+                </span>
+              </button>
+            ))
+          )}
+        </div>
       </section>
     </>
   );
@@ -2885,23 +3373,21 @@ function SearchPage({
 }
 
 function AnalyticsPage() {
-  const url = createGoogleOAuthUrl({
-    clientId: "example-client-id",
-    redirectUri: "http://localhost:5173/analytics",
-    scopes: ["https://www.googleapis.com/auth/analytics.readonly"],
-    state: "ilm-local"
-  });
-
   return (
     <>
       <PageHeader
         title="Analytics"
-        description="Connect user-owned Google Analytics and Search Console accounts."
+        description="Reader analytics integrations are being designed with the same user-owned approach as publishing."
       />
-      <section className="grid gap-4 p-6 md:grid-cols-3">
-        <StatusCard title="Sessions" value="Connect Google" icon={<BarChart3 />} />
-        <StatusCard title="Clicks" value="Connect Search Console" icon={<Search />} />
-        <StatusCard title="Auth Provider" value={new URL(url).hostname} icon={<KeyRound />} />
+      <section className="p-6">
+        <div className="max-w-2xl rounded-md border border-zinc-200 bg-white p-6">
+          <p className="text-xs font-semibold uppercase text-zinc-500">Coming soon</p>
+          <h2 className="mt-2 text-xl font-semibold">Analytics without invented numbers</h2>
+          <p className="mt-2 text-sm leading-6 text-zinc-600">
+            Google Analytics and Search Console are not connected yet. This page will stay honest
+            and empty until Ilm can read user-authorized data securely.
+          </p>
+        </div>
       </section>
     </>
   );
@@ -2913,11 +3399,13 @@ function SettingsPage({
   geminiEncrypted,
   googleAnalyticsId,
   siteUrl,
+  blogPath,
   hasFrontend,
   isInitializingTemplate,
   onSaveGeminiKey,
   onClearGeminiKey,
-  onSaveSiteUrl,
+  onClearLocalData,
+  onSaveSiteSettings,
   onInitializeTemplate
 }: {
   readonly repository?: ConnectedRepository;
@@ -2925,21 +3413,29 @@ function SettingsPage({
   readonly geminiEncrypted: boolean;
   readonly googleAnalyticsId?: string;
   readonly siteUrl?: string;
+  readonly blogPath: string;
   readonly hasFrontend: boolean;
   readonly isInitializingTemplate?: boolean;
   readonly onSaveGeminiKey: (key: string, passphrase?: string) => void;
   readonly onClearGeminiKey: () => void;
-  readonly onSaveSiteUrl: (url: string) => void;
+  readonly onClearLocalData: () => void;
+  readonly onSaveSiteSettings: (url: string, blogPath: string) => Promise<void>;
   readonly onInitializeTemplate: () => void;
 }) {
   const [apiKeyInput, setApiKeyInput] = React.useState(geminiApiKey);
   const [passphraseInput, setPassphraseInput] = React.useState("");
   const [storeLocally, setStoreLocally] = React.useState(false);
   const [urlInput, setUrlInput] = React.useState(siteUrl || "");
+  const [blogPathInput, setBlogPathInput] = React.useState(blogPath);
 
   React.useEffect(() => {
     setApiKeyInput(geminiApiKey);
   }, [geminiApiKey]);
+
+  React.useEffect(() => {
+    setUrlInput(siteUrl || "");
+    setBlogPathInput(blogPath);
+  }, [siteUrl, blogPath]);
 
   return (
     <>
@@ -3000,7 +3496,17 @@ function SettingsPage({
                   onChange={(e) => setUrlInput(e.target.value)}
                   className="flex-1 rounded-md border border-zinc-300 p-2 text-sm focus:border-zinc-950 focus:outline-none"
                 />
-                <Button onClick={() => onSaveSiteUrl(urlInput)}>Save URL</Button>
+              </div>
+              <div className="mt-3 flex gap-2">
+                <input
+                  aria-label="Blog URL path"
+                  value={blogPathInput}
+                  onChange={(event) => setBlogPathInput(event.target.value)}
+                  placeholder="blog"
+                />
+                <Button onClick={() => void onSaveSiteSettings(urlInput, blogPathInput)}>
+                  Save Site Settings
+                </Button>
               </div>
             </div>
           </div>
@@ -3011,7 +3517,7 @@ function SettingsPage({
             <Field label="Gemini API Key">
               <input
                 type="password"
-                placeholder={geminiApiKey ? "••••••••••••••••" : "Enter your Gemini API key"}
+                placeholder={geminiApiKey ? "Stored key" : "Enter your Gemini API key"}
                 value={apiKeyInput}
                 onChange={(e) => setApiKeyInput(e.target.value)}
                 className="w-full rounded-md border border-zinc-300 p-2 text-sm focus:border-zinc-950 focus:outline-none"
@@ -3080,6 +3586,16 @@ function SettingsPage({
             Access tokens belong to the user session. The CMS does not introduce a traditional
             database or copy your content to our servers.
           </p>
+          <div className="mt-4 border-t border-zinc-200 pt-4">
+            <p className="text-sm font-medium text-zinc-950">Clear browser data</p>
+            <p className="mt-1 text-xs leading-5 text-zinc-500">
+              Removes recovery drafts, repository workspaces, encrypted AI credentials, and the
+              current GitHub session. Repository files are not deleted.
+            </p>
+            <Button className="mt-3" variant="ghost" onClick={onClearLocalData}>
+              Clear local data
+            </Button>
+          </div>
         </Panel>
       </section>
     </>
@@ -3167,14 +3683,34 @@ function EmptyState({
 }
 
 function buildDraftFrontmatter(draft: DraftRecord): DraftFrontmatter {
-  return {
+  return DraftFrontmatterSchema.parse({
     title: draft.title,
     description: draft.description,
-    slug: draft.slug,
+    slug: generateSlug(draft.slug),
     updatedAt: new Date().toISOString(),
     tags: splitCsv(draft.tags),
     categories: splitCsv(draft.categories),
     author: draft.author
+  });
+}
+
+function toDraftRecord(document: ContentDocument): DraftRecord {
+  const frontmatter = document.frontmatter;
+  return {
+    id: document.path,
+    kind: document.kind,
+    path: document.path,
+    blobSha: document.blobSha,
+    savedSlug: document.savedSlug,
+    title: frontmatter.title,
+    slug: frontmatter.slug ?? document.savedSlug,
+    description: frontmatter.description ?? "",
+    author: frontmatter.author ?? "",
+    tags: (frontmatter.tags ?? []).join(", "),
+    categories: (frontmatter.categories ?? []).join(", "),
+    markdown: document.markdown,
+    updatedAt: frontmatter.updatedAt ?? new Date(0).toISOString(),
+    publishedAt: frontmatter.publishedAt
   };
 }
 
@@ -3183,6 +3719,14 @@ function splitCsv(value: string): string[] {
     .split(",")
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function normalizeMediaMarkdown(markdown: string, media: readonly MediaRecord[]): string {
+  return media.reduce(
+    (content, item) =>
+      item.previewUrl ? content.replaceAll(item.previewUrl, `/${item.path}`) : content,
+    markdown
+  );
 }
 
 function upsertById<T extends { readonly id: string }>(items: readonly T[], item: T): T[] {
