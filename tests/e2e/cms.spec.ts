@@ -88,7 +88,7 @@ test("shows setup for a connected repository without a static site", async ({ pa
 
   await expect(page.getByRole("heading", { name: "Editor", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Save Draft" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Set Up Blog Site" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Review Setup Changes" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Set up site to publish" })).toBeDisabled();
 });
 
@@ -183,7 +183,7 @@ test("shows live blog destination for a repository with GitHub Pages", async ({ 
   await expect(page.getByText("Live blog URL")).toBeVisible();
   await expect(
     page.getByRole("link", {
-      name: "https://ij-roy.github.io/ilm-test-blog/blogs/own-your-publishing-workflow/"
+      name: "https://ij-roy.github.io/ilm-test-blog/blog/own-your-publishing-workflow/"
     })
   ).toBeVisible();
   await expect(page.getByRole("button", { name: /Publish/ })).toBeVisible();
